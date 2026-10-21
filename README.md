@@ -1,11 +1,11 @@
-<div align="center">
+ <div align="center">
 
 # **SaveSync**
 
 **Your game saves, backed up, restored, and synced — without losing a byte.**
 
-An open-source backup and sync engine for emulator and PC game saves.
-Steam Cloud alternative, local-first, fully offline-capable.
+An open-source backup and sync engine for emulator and PC game saves.  
+A Steam Cloud alternative that's local-first and fully offline-capable.
 
 ![Engine](https://img.shields.io/badge/engine-Rust-DEA584?logo=rust&logoColor=white)
 ![Desktop](https://img.shields.io/badge/desktop-Tauri_2-24C8DB?logo=tauri&logoColor=white)
@@ -15,11 +15,9 @@ Steam Cloud alternative, local-first, fully offline-capable.
 
 </div>
 
-> I'm a first year CS student so be warned:
-> ¡¡¡(DISCLAIMER: vibe-coded)!!!
-> Open source , Steam Cloud alternative for emulators and "legit" games. Cloud features are used via your typical cloud provider (iCloud, Google Drive, Dropbox, self hosted cloud support is soon to be)
+> **A small disclaimer:** I'm a first-year computer science student, so bear with me this project is very much a work in progress and, yes, it's vibe-coded. SaveSync is open source and aims to be a Steam Cloud alternative for emulators and PC games you own. Cloud syncing currently supports Google Drive, with other providers such as Dropbox, iCloud (that one is a bit harder), and self-hosted storage planned for the future.
 
-SaveSync snapshots game saves into a local, versioned history you can browse, restore, and sync between devices. It is designed around one idea: **a save file is irreplaceable**, so nothing gets overwritten until a verified, recoverable copy exists somewhere else.
+SaveSync snapshots game saves into a local, versioned history you can browse, restore, and sync between devices. It's built around one core principle: **a save file is irreplaceable.** Nothing gets overwritten until a verified, recoverable copy exists somewhere else.
 
 ## How it works
 
@@ -27,14 +25,14 @@ SaveSync snapshots game saves into a local, versioned history you can browse, re
 | --- | --- |
 | **Back up** | Snapshots every enrolled game's save locations into immutable, checksummed revisions stored locally in SQLite. Nothing is replaced without a verified, recoverable copy. |
 | **Restore** | Staged, journaled restores with rollback, so an interrupted restore never leaves a half-written save. |
-| **Sync** | History is a DAG of immutable revisions shared across devices; conflicts keep BOTH revisions by default, nothing is silently merged. |
-| **Discover** | Finds candidate save locations for your games, but never enrolls anything automatically — you pick each game and confirm its mode first. |
+| **Sync** | History is a DAG of immutable revisions shared across devices; conflicts keep **both** revisions by default, and nothing is silently merged. |
+| **Discover** | Finds candidate save locations for your games, but never enrolls anything automatically — you choose each game and confirm its mode first. |
 
 ## The rules it never breaks
 
 - **Never touches the only good copy.** SaveSync will not modify or delete the only known-good copy of a save unless the operation is guaranteed to succeed — or a recoverable alternative already exists.
 - **Everything is opt-in.** Backups and sync start only after you manually enroll a game and confirm its enrollment mode. No automation without explicit consent.
-- **Offline first.** Local backup and restore work with no network at all. Google Drive is optional failover, never a runtime requirement.
+- **Offline first.** Local backup and restore work with no network at all. Google Drive is optional, never a runtime requirement.
 - **Stable identity.** Every enrolled game keeps a UUID that survives reinstalls, hardware swaps, and device changes.
 
 ## Quick start
@@ -109,24 +107,4 @@ cd savesync-desktop/src-tauri && cargo test
 cd savesync-core && cargo test --lib db::tests
 
 # Enrollment gating and discovery candidates
-cd savesync-core && cargo test --test phase1_safety discovered_games
-
-# Snapshot, restore, and journal behavior
-cd savesync-core && cargo test --test phase1_safety
-
-# Full release verification
-./savesync-docs/scripts/maint/verify-release.sh
-```
-
-</details>
-
-<br>
-
-<details>
-<summary><strong>Agents & skills (<code>.opencode/</code>)</strong></summary>
-
-Development on this repo is structured around dedicated agents in `.opencode/agents/` — [orchestrator](.opencode/agents/orchestrator.md), [coder](.opencode/agents/coder.md), [reviewer](.opencode/agents/reviewer.md), [security-auditor](.opencode/agents/security-auditor.md), and [scout](.opencode/agents/scout.md). The orchestrator plans and delegates, only the coder edits the working tree, and every significant change goes through an independent review pass.
-
-Project skills live in `.opencode/skills/`: [sync-engine](.opencode/skills/sync-engine), [save-data-safety](.opencode/skills/save-data-safety), [platform-adapters](.opencode/skills/platform-adapters), [reliability-testing](.opencode/skills/reliability-testing), and [code-review-and-quality](.opencode/skills/code-review-and-quality).
-
-</details>
+cd
