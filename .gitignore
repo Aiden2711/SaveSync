@@ -1,0 +1,30 @@
+**/node_modules/
+**/target/
+savesync-desktop/dist/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+
+# Local databases and SQLite sidecars
+**/*.db
+**/*.db-*
+**/*.sqlite
+**/*.sqlite3
+
+# Credentials and private keys
+**/.env
+**/.env.*
+!**/.env.example
+**/*credentials*.json
+**/*.pem
+**/*.key
+
+# Generated build artifacts
+**/node_modules/
+**/target/
+**/dist/
+
+# Local machine configuration (may contain credentials)
+opencode.json

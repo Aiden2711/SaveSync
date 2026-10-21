@@ -1,0 +1,23 @@
+[package]
+name = "savesync-desktop"
+version = "0.1.0"
+edition = "2024"
+description = "SaveSync desktop shell"
+license = "Apache-2.0"
+
+[lib]
+name = "savesync_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+savesync-core = { path = "../../savesync-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+open = "5"
+
+[lints.rust]
+unsafe_code = "forbid"
