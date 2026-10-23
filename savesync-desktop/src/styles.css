@@ -27,14 +27,17 @@
      On the dark base it is the amber itself; dark-on-dark ink would be invisible. */
   --warn-ink: #e8a33d;
   --danger: #e06b6b;
-  /* Derived text/ink tokens. Light-theme counterparts live in [data-theme="light"]. */
-  --accent-text: var(--accent); /* accent as TEXT: 7.50:1 on the dark base */
-  --danger-text: #ef8080; /* danger as TEXT: 5.48:1 on --surface, 6.21:1 on --base */
+  /* Derived text/ink tokens. Light-theme counterparts live in [data-theme="light"].
+     Every ratio below is a WCAG 2.x relative-luminance ratio measured on the
+     resolved token values (sRGB, no estimates). */
+  --accent-text: var(--accent); /* accent as TEXT: 7.50:1 on --base, 6.61:1 on --surface */
+  --danger-text: #ef8080; /* danger as TEXT: 5.47:1 on --surface, 6.21:1 on --base */
   --danger-ink: #1f1c19; /* ink ON a --danger fill: 5.24:1 */
   --scrim: rgba(12, 10, 9, 0.55);
-  --text-2xs: 11px;
-  --text-xs: 13px;
-  --text-sm: 14px;
+  /* Readability floor: nothing in the shell renders below 14px (no 10-11px labels). */
+  --text-2xs: 14px;
+  --text-xs: 14px;
+  --text-sm: 15px;
   --text-base: 15.5px;
   --text-md: 18.5px;
   --text-lg: 22px;
@@ -103,7 +106,7 @@
   --warn: #c47c1a;
   --warn-ink: #8a5207;
   --danger: #a7282b;
-  --accent-text: #96590c; /* accent as TEXT: 4.95:1 on --base, 5.27:1 on --surface */
+  --accent-text: #8a5207; /* accent as TEXT: 5.61:1 on --base, 5.97:1 on --surface, 5.05:1 on --surface-2 */
   --danger-text: #a7282b; /* danger as TEXT: 6.20:1 on --base, 6.59:1 on --surface */
   --danger-ink: #ffffff; /* ink ON a --danger fill: 7.04:1 */
   --scrim: rgba(36, 32, 28, 0.28);
@@ -288,37 +291,44 @@ label {
   color: var(--ink-muted);
 }
 
+/*
+ * Shell: one compact top bar above a single scroll region. There is no
+ * sidebar and no bottom status bar; long-running state stays in the inline
+ * .busy-line and banners inside .messages.
+ */
 .app {
   display: grid;
-  grid-template-columns: 344px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   height: 100vh;
   min-height: 100vh;
 }
 
-.sidebar {
+.topbar {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: var(--space-sm);
-  padding: var(--space-md) var(--space-md) var(--space-sm);
+  flex-wrap: wrap;
+  min-width: 0;
+  padding: var(--space-2xs) var(--space-md);
   background: var(--surface);
-  border-right: 1px solid var(--line);
-  overflow-y: auto;
+  border-bottom: 1px solid var(--line);
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: var(--space-xs);
-  padding-bottom: var(--space-3xs);
+  gap: var(--space-2xs);
+  min-width: 0;
 }
 
 .brand-mark {
   display: grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
-  border-radius: var(--radius-2);
-  background: var(--chrome);
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius);
+  background: var(--accent);
   color: var(--accent-ink);
   font-family: var(--font-display);
   font-size: var(--text-sm);
@@ -326,16 +336,121 @@ label {
   letter-spacing: 0.02em;
 }
 
-.brand-copy h1 {
+.brand-copy {
+  min-width: 0;
+}
+
+.brand-name {
   font-family: var(--font-display);
-  font-size: var(--text-base);
+  font-size: var(--text-md);
   font-weight: 650;
+  line-height: 1.1;
   letter-spacing: -0.01em;
 }
 
-.brand-copy p {
-  color: var(--ink-muted);
-  font-size: var(--text-xs);
+.brand-sub {
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: 1.3;
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3xs);
+  flex-wrap: wrap;
+  min-width: 0;
+  margin-left: var(--space-2xs);
+}
+
+/*
+ * Nav buttons: the icon box and the label share one flex line, so the glyph is
+ * centred on the label's cap height instead of riding high in the box. The
+ * fixed 18px icon box removes the difference between icon heights.
+ */
+.nav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  min-height: 34px;
+  padding: 0 var(--space-xs);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: var(--text-sm);
+  font-weight: 550;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.nav-btn:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.nav-btn[aria-current="page"] {
+  border-color: var(--line);
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.nav-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+
+.nav-icon svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  margin-left: auto;
+}
+
+.view {
+  display: block;
+  min-width: 0;
+}
+
+.view-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+  padding-bottom: var(--space-md);
+  border-bottom: 1px solid var(--line);
+  margin-bottom: var(--space-md);
+}
+
+.view-header h2 {
+  margin: var(--space-3xs) 0 var(--space-2xs);
+  font-family: var(--font-display);
+  font-size: var(--text-2xl);
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+
+.view-header .sub {
+  max-width: 68ch;
+  color: var(--ink-2);
+  font-size: var(--text-sm);
+}
+
+.view-header .primary {
+  min-height: 38px;
+  padding: 0 var(--space-sm);
 }
 
 .panel {
@@ -441,29 +556,6 @@ label {
   font-weight: 650;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-}
-
-.library-header {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: var(--space-md);
-  padding-bottom: var(--space-md);
-  border-bottom: 1px solid var(--line);
-  margin-bottom: var(--space-md);
-}
-
-.library-header h2 {
-  margin: var(--space-3xs) 0 var(--space-2xs);
-  font-family: var(--font-display);
-  font-size: var(--text-2xl);
-  line-height: 1.1;
-  letter-spacing: -0.02em;
-}
-
-.library-header .primary {
-  min-height: 38px;
-  padding: 0 var(--space-sm);
 }
 
 .library-count {
@@ -750,15 +842,47 @@ label {
   background: var(--accent);
 }
 
-.sidebar-footer {
-  margin-top: auto;
+.settings-rows {
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
   padding-top: var(--space-xs);
   border-top: 1px solid var(--line);
-  color: var(--ink-muted);
-  font-family: var(--font-mono);
+}
+
+.setting-row:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.setting-row strong {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.setting-row .muted {
+  display: block;
+  max-width: 60ch;
   font-size: var(--text-2xs);
-  line-height: 1.4;
-  overflow-wrap: anywhere;
+}
+
+.seg {
+  display: flex;
+  gap: var(--space-3xs);
+  flex-wrap: wrap;
+}
+
+.seg button[aria-pressed="true"] {
+  border-color: var(--line);
+  background: var(--surface-2);
+  color: var(--ink);
 }
 
 .muted {
@@ -911,15 +1035,11 @@ dialog.modal .dialog-card {
 }
 
 @media (max-width: 980px) {
-  .app {
-    grid-template-columns: 300px minmax(0, 1fr);
-  }
-
   .content {
-    padding: 24px 24px 40px;
+    padding: var(--space-md) var(--space-md) var(--space-lg);
   }
 
-  .library-header h2,
+  .view-header h2,
   .detail-copy h2 {
     font-size: var(--text-xl);
   }
@@ -927,15 +1047,19 @@ dialog.modal .dialog-card {
 
 @media (max-width: 760px) {
   .app {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
     height: auto;
     min-height: 100vh;
   }
 
-  .sidebar {
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-    overflow-y: visible;
+  .topbar {
+    padding: var(--space-2xs) var(--space-sm);
+  }
+
+  .nav {
+    order: 3;
+    width: 100%;
+    margin-left: 0;
   }
 
   .content {

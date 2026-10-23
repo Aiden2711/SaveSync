@@ -1,9 +1,14 @@
-import { useMemo } from "react";
-import { adapterLabel, coverFor } from "../lib/cover";
+import { memo, useMemo } from "react";
+import { coverFor } from "../lib/cover";
 
-const DISPLAY_FONT =
-  '"Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system, sans-serif';
 const MONO_FONT = '"Cascadia Mono", ui-monospace, monospace';
+
+/**
+ * Emblem centre. Every motif is stroked around this point so the three
+ * variants share one optical size and sit clear of the inner frame.
+ */
+const EMBLEM_X = 150;
+const EMBLEM_Y = 188;
 
 interface CoverArtProps {
   title: string;
@@ -11,18 +16,26 @@ interface CoverArtProps {
 }
 
 /**
- * Decorative generated cover: flat ground, one geometric motif, a monogram and
- * the adapter name. Purely presentational — the surrounding button carries the
- * accessible name.
+ * Decorative generated cover: a flat cartridge label with an inner frame, one
+ * stroked emblem and a small catalog-code monogram. The adapter is not drawn —
+ * it is already shown under the card and in the detail meta — but it is kept on
+ * the wrapper as a data attribute for styling hooks.
+ *
+ * Purely presentational: the surrounding button carries the accessible name.
  */
-export default function CoverArt({ title, adapter }: CoverArtProps) {
+function CoverArt({ title, adapter }: CoverArtProps) {
   const { palette, motif, monogram } = useMemo(() => coverFor(title), [title]);
-  const adapterName = adapterLabel(adapter).toUpperCase();
-  const microtext =
-    adapterName.length > 20 ? `${adapterName.slice(0, 19)}…` : adapterName;
+
+  const emblemStroke = {
+    fill: "none",
+    stroke: palette.accent,
+    strokeWidth: 2,
+    vectorEffect: "non-scaling-stroke",
+    strokeLinecap: "round",
+  } as const;
 
   return (
-    <span className="cover-art">
+    <span className="cover-art" data-adapter={adapter}>
       <svg
         viewBox="0 0 300 400"
         preserveAspectRatio="xMidYMid meet"
@@ -31,68 +44,74 @@ export default function CoverArt({ title, adapter }: CoverArtProps) {
       >
         <rect width="300" height="400" fill={palette.bg} />
 
-        {motif === "diagonal" && (
-          <polygon points="0,0 300,0 300,96 0,252" fill={palette.accent} />
-        )}
+        <rect
+          x="20"
+          y="20"
+          width="260"
+          height="360"
+          fill="none"
+          stroke={palette.ink}
+          strokeOpacity="0.18"
+          strokeWidth="1"
+          vectorEffect="non-scaling-stroke"
+        />
 
+        {/*
+          Motif geometry stays clear of the viewBox edges. A square rotated 45°
+          spans side * √2, so the 74/37 sides read as ~104/52 diamonds and keep
+          the mark inside roughly 96..204 horizontally.
+        */}
         {motif === "squares" && (
           <>
-            <rect x="108" y="18" width="200" height="200" fill={palette.accent} />
-            <rect x="140" y="50" width="136" height="136" fill={palette.bg} />
-            <rect x="172" y="82" width="72" height="72" fill={palette.accent} />
+            <rect
+              x={EMBLEM_X - 37}
+              y={EMBLEM_Y - 37}
+              width="74"
+              height="74"
+              transform={`rotate(45 ${EMBLEM_X} ${EMBLEM_Y})`}
+              {...emblemStroke}
+            />
+            <rect
+              x={EMBLEM_X - 18.5}
+              y={EMBLEM_Y - 18.5}
+              width="37"
+              height="37"
+              transform={`rotate(45 ${EMBLEM_X} ${EMBLEM_Y})`}
+              {...emblemStroke}
+            />
           </>
         )}
 
         {motif === "circle" && (
-          <circle cx="236" cy="92" r="132" fill={palette.accent} />
+          <>
+            <circle cx={EMBLEM_X} cy={EMBLEM_Y} r="52" {...emblemStroke} />
+            <circle cx={EMBLEM_X} cy={EMBLEM_Y} r="26" {...emblemStroke} />
+          </>
+        )}
+
+        {motif === "diagonal" && (
+          <>
+            <line x1="108" y1="224" x2="192" y2="140" {...emblemStroke} />
+            <line x1="140" y1="224" x2="192" y2="172" {...emblemStroke} />
+            <line x1="108" y1="192" x2="160" y2="140" {...emblemStroke} />
+          </>
         )}
 
         <text
-          x="150"
-          y="312"
+          x={EMBLEM_X}
+          y="322"
           textAnchor="middle"
           fill={palette.ink}
-          fontFamily={DISPLAY_FONT}
-          fontSize="120"
-          fontWeight="700"
-          letterSpacing="-4"
+          fontFamily={MONO_FONT}
+          fontSize="44"
+          fontWeight="500"
+          letterSpacing="6"
         >
           {monogram}
         </text>
-
-        <line
-          x1="26"
-          y1="352"
-          x2="274"
-          y2="352"
-          stroke={palette.ink}
-          strokeOpacity="0.4"
-          strokeWidth="1"
-          vectorEffect="non-scaling-stroke"
-        />
-        <text
-          x="26"
-          y="374"
-          fill={palette.ink}
-          fontFamily={MONO_FONT}
-          fontSize="12"
-          letterSpacing="1.1"
-        >
-          {microtext}
-        </text>
-
-        <rect
-          x="0.5"
-          y="0.5"
-          width="299"
-          height="399"
-          fill="none"
-          stroke={palette.ink}
-          strokeOpacity="0.45"
-          strokeWidth="1"
-          vectorEffect="non-scaling-stroke"
-        />
       </svg>
     </span>
   );
 }
+
+export default memo(CoverArt);

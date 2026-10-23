@@ -1,32 +1,36 @@
 /**
  * Deterministic cover art for the library grid.
  *
- * Covers are generated locally from the game title: a stable hash picks a
- * palette and a motif, and the title supplies a small monogram. No network,
- * no images, no randomness, so the same title always renders the same cover.
+ * Covers are generated locally from the game title: independent stable hashes
+ * pick a palette and a motif, and the title supplies a small monogram. No
+ * network, no images, no randomness, so the same title always renders the same
+ * cover.
  */
 
 export interface CoverPalette {
   /** Flat background. */
   bg: string;
-  /** Monogram and microtext; AA contrast against `bg`. */
+  /** Monogram; AA contrast against `bg`. */
   ink: string;
-  /** Large geometric motif. */
+  /** Stroked emblem. */
   accent: string;
 }
 
 /**
- * Six flat palettes drawn from the SaveSync token set. Every `ink` keeps at
- * least 5:1 contrast against its `bg`, so monogram and adapter label stay
- * readable at small cover sizes.
+ * Six flat palettes: paper, ink and the single SaveSync cobalt accent.
+ *
+ * Covers are cartridge labels, not posters, so the palette stays inside the
+ * product token set — no second hue, and never the danger red used for
+ * destructive actions. Every `ink` keeps at least 5:1 contrast against its
+ * `bg` so the monogram stays readable at 160px.
  */
 export const COVER_PALETTES: readonly CoverPalette[] = [
-  { bg: "#3D4F97", ink: "#F7F3E8", accent: "#E48600" },
-  { bg: "#E9E5DB", ink: "#1E2230", accent: "#3D4F97" },
-  { bg: "#8BA1D4", ink: "#1E2230", accent: "#FBFAF6" },
-  { bg: "#2C3B74", ink: "#F1EEE7", accent: "#9FBEE7" },
-  { bg: "#E48600", ink: "#1E2230", accent: "#FBFAF6" },
-  { bg: "#DEDEDE", ink: "#A7282B", accent: "#1E2230" },
+  { bg: "#E9E5DB", ink: "#1E2230", accent: "#33469B" },
+  { bg: "#F3F0E9", ink: "#1E2230", accent: "#33469B" },
+  { bg: "#D9DEEF", ink: "#1E2230", accent: "#33469B" },
+  { bg: "#33469B", ink: "#F3F0E9", accent: "#B9C4E8" },
+  { bg: "#2A3050", ink: "#F1EEE7", accent: "#8BA1D4" },
+  { bg: "#CFC9BB", ink: "#1E2230", accent: "#33469B" },
 ];
 
 export const COVER_MOTIFS = ["diagonal", "squares", "circle"] as const;
@@ -121,11 +125,21 @@ export interface CoverSpec {
   monogram: string;
 }
 
+/**
+ * Palette and motif are hashed separately, from the same title with distinct
+ * domain suffixes. Deriving both from one hash made the two choices correlate:
+ * in practice a handful of titles collapsed onto the same palette, and one
+ * motif dominated the grid. Independent inputs decorrelate them, so the pair
+ * looks varied rather than duplicated, while staying deterministic per title.
+ */
 export function coverFor(title: string): CoverSpec {
-  const hash = mix32(fnv1a(title));
+  const paletteIndex =
+    mix32(fnv1a(`${title}#palette`)) % COVER_PALETTES.length;
+  const motifIndex =
+    mix32(fnv1a(`${title}#motif`)) % COVER_MOTIFS.length;
   return {
-    palette: COVER_PALETTES[hash % COVER_PALETTES.length],
-    motif: COVER_MOTIFS[(hash >>> 8) % COVER_MOTIFS.length],
+    palette: COVER_PALETTES[paletteIndex],
+    motif: COVER_MOTIFS[motifIndex],
     monogram: monogramFor(title),
   };
 }
