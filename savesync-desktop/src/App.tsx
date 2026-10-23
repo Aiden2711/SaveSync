@@ -77,6 +77,18 @@ function shortId(id: string): string {
 }
 
 /**
+ * Initial letter of a game title, used by the tile art slot when the game has
+ * no cover art yet. Skips leading punctuation/whitespace so "'-Hades'" still
+ * reads as "H", and falls back to "?" for a title with no letters or digits.
+ * Rendered with the mono text stack by `.tile-mono`; this helper only decides
+ * the character.
+ */
+function tileInitial(title: string): string {
+  const letter = title.match(/[\p{L}\p{N}]/u);
+  return letter ? letter[0].toUpperCase() : "?";
+}
+
+/**
  * First focusable control inside a dialog, in DOM order. Keyboard users land on
  * Cancel, which is rendered first in every confirmation dialog.
  */
@@ -625,31 +637,59 @@ export default function App() {
             </p>
           </div>
         ) : (
-          <ul className="cover-grid">
-            {games.map((game) => {
+          <ul className="tile-grid">
+            {games.map((game, index) => {
               const isSelected = game.id === selectedId;
               const isDirty = dirtyGames.has(game.id);
+              // The first enrolled game fills the two-column hero slot.
+              const isHero = index === 0;
               return (
-                <li key={game.id}>
+                <li
+                  key={game.id}
+                  className={isHero ? "tile-cell tile-cell--hero" : "tile-cell"}
+                >
                   <button
                     type="button"
-                    className="cover-card"
+                    className={isHero ? "tile tile--hero" : "tile"}
                     aria-current={isSelected ? "true" : undefined}
                     onClick={() => setSelectedId(game.id)}
                     onContextMenu={(event) => openMenu(event, game.id)}
                   >
-                    <CoverArt title={game.title} adapter={game.adapter_type} />
-                    <span className="cover-label">
-                      <span className="cover-title">{game.title}</span>
-                      {isDirty && (
-                        <span className="dirty-badge" aria-label="Uncaptured save changes" />
+                    <span className="tile-art" aria-hidden="true">
+                      {game.cover_path ? (
+                        <CoverArt title={game.title} adapter={game.adapter_type} />
+                      ) : (
+                        <span className="tile-mono">{tileInitial(game.title)}</span>
                       )}
-                      <span className="cover-meta">
+                    </span>
+                    <span className="tile-label">
+                      <span className="tile-head">
+                        <span className="tile-title">{game.title}</span>
+                        {isDirty && (
+                          <span
+                            className="dirty-badge"
+                            aria-label="Uncaptured save changes"
+                          />
+                        )}
+                      </span>
+                      <span className="tile-acc">
                         {adapterLabel(game.adapter_type)} ·{" "}
                         {game.active_head_revision_id
                           ? `head ${shortId(game.active_head_revision_id)}`
                           : "No snapshots"}
                       </span>
+                    </span>
+                    <span className="tile-check" aria-hidden="true">
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.4"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M5 12.8 9.6 17.4 19 8" />
+                      </svg>
                     </span>
                   </button>
                 </li>

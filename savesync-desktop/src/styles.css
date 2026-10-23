@@ -564,35 +564,216 @@ label {
   font-size: var(--text-xs);
 }
 
-.cover-grid {
+/*
+ * Game grid: the first tile is a two-column hero, the rest are standard cards.
+ *
+ * Two rules keep the hero's label directly under its art, which the reference
+ * mockup got wrong: the grid uses `align-items: start` and every tile is a
+ * top-anchored flex column, so a tile's height is exactly its art plus its
+ * label. The mockup bottom-anchored the hero label inside a cell stretched to
+ * the height of the taller standard tiles, which left ~108px of dead space
+ * between the hero art and its title (standard tiles: ~8px). Any leftover grid
+ * space now falls below a tile, never between its art and its label.
+ */
+.tile-grid {
   list-style: none;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  align-items: start;
   gap: var(--space-md) var(--space-sm);
 }
 
-.cover-card {
-  display: grid;
-  gap: var(--space-xs);
+/*
+ * The grid item is the cell (`li`), not the `.tile` button inside it: a grid
+ * span only has an effect on a grid item, so the cell is what the hero's
+ * `grid-column` has to land on.
+ */
+.tile-cell {
+  display: flex;
+  min-width: 0;
+}
+
+.tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
   width: 100%;
-  min-height: 0;
-  padding: var(--space-2xs);
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
   border: 1px solid transparent;
-  border-radius: var(--radius-control);
-  background: transparent;
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
   font-weight: 400;
   text-align: left;
+  transition: border-color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease);
 }
 
-.cover-card:hover:not(:disabled) {
+.tile:hover:not(:disabled),
+.tile:focus-visible {
   border-color: var(--line);
-  background: var(--surface);
 }
 
-.cover-card[aria-current="true"] {
-  border-color: var(--accent);
-  background: var(--surface);
+/*
+ * Selected tile: the same --line border + --surface-2 fill as the top nav's
+ * current destination, plus the check glyph. The accent is deliberately NOT
+ * used here — amber on a --surface-2 tile is not a verified contrast pair.
+ */
+.tile[aria-current="true"] {
+  border-color: var(--line);
+  background: var(--surface-2);
+}
+
+.tile-art {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 100%;
+  aspect-ratio: 4 / 5;
+  overflow: hidden;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink-2);
+}
+
+/*
+ * Hero: two columns wide, with full-bleed 2:1 art.
+ *
+ * The span MUST be declared on the grid item — the cell — because
+ * `grid-column` is inert on any other element. Declaring it on the `.tile`
+ * button inside the cell left the hero occupying a single track while the
+ * stylesheet still read as if it spanned two. `.tile--hero` stays on that
+ * button, where it only drives the art ratio and the mono initial's size.
+ */
+.tile-cell--hero {
+  grid-column: span 2;
+}
+
+.tile--hero .tile-art {
+  aspect-ratio: 2 / 1;
+}
+
+/*
+ * The generated cover is a 3:4 portrait, and the hero band is 2:1. Left to the
+ * SVG's default "meet" fit, the portrait is letterboxed into the band: a small
+ * centred thumbnail on a wide grey field. The hero crops instead — the SVG is
+ * laid out at the band's width, keeps its own ratio, is centred vertically and
+ * is clipped by the art box — so the art is the band. The 4:5 tiles keep the
+ * default fit and stay full-bleed.
+ */
+.tile--hero .tile-art .cover-art {
+  display: grid;
+  place-items: center;
+}
+
+.tile--hero .tile-art .cover-art svg {
+  width: 100%;
+  height: auto;
+}
+
+/*
+ * A two-column span needs two grid tracks. Below this width the auto-fill grid
+ * has a single track, so the hero would resolve into an implicit second track
+ * and overflow the view. Standard tile layout instead.
+ */
+@media (max-width: 560px) {
+  .tile-cell--hero {
+    grid-column: span 1;
+  }
+}
+
+/*
+ * Mono initial fallback for a game without cover art. The glyph is decoration:
+ * the surrounding button carries the accessible name.
+ */
+.tile-mono {
+  font-family: var(--font-text);
+  font-size: calc(var(--text-2xl) * 1.2);
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.06em;
+  color: var(--ink-2);
+  text-transform: uppercase;
+}
+
+.tile--hero .tile-mono {
+  font-size: calc(var(--text-2xl) * 1.9);
+}
+
+/*
+ * Label block. One shared rule for hero and standard tiles, so the gap between
+ * the art and the title is identical in both.
+ */
+.tile-label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3xs);
+  min-width: 0;
+  padding: var(--space-2xs) var(--space-xs) var(--space-xs);
+}
+
+.tile-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3xs);
+  min-width: 0;
+}
+
+.tile-title {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.tile-acc {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tile-check {
+  position: absolute;
+  top: var(--space-2xs);
+  right: var(--space-2xs);
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--base);
+  color: var(--ink-2);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.tile-check svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+.tile[aria-current="true"] .tile-check {
+  border-color: var(--line);
+  color: var(--ink-2);
+  opacity: 1;
 }
 
 .cover-art {
@@ -610,30 +791,11 @@ label {
   height: 100%;
 }
 
-.cover-label {
-  display: grid;
-  gap: var(--space-3xs);
-  padding: 0 var(--space-3xs) var(--space-3xs);
-}
-
-.cover-title {
-  display: -webkit-box;
-  overflow: hidden;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  color: var(--ink);
-  font-family: var(--font-display);
-  font-size: var(--text-sm);
-  font-weight: 600;
-  line-height: 1.25;
-}
-
-.cover-meta {
-  color: var(--ink-muted);
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  line-height: 1.4;
-  overflow-wrap: anywhere;
+/* Inside a tile the art box owns the ratio (4:5, or 2:1 for the hero). */
+.tile-art .cover-art {
+  height: 100%;
+  aspect-ratio: auto;
+  border-radius: 0;
 }
 
 .empty {
