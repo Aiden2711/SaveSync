@@ -13,9 +13,11 @@
 //! - [`provider`] / [`sync`]: optional, mockable transport for immutable
 //!   revisions. Live saves are never changed by sync.
 //! - [`watcher`]: passive save-directory change detection with debouncing.
+//! - [`artwork`]: optional, bounded SteamGridDB cover-art downloads.
 //!
 //! Nothing in this crate requires a network connection to operate.
 
+pub mod artwork;
 pub mod blob;
 pub mod credentials;
 pub mod db;
@@ -36,6 +38,7 @@ pub mod store;
 pub mod sync;
 pub mod watcher;
 
+pub use artwork::{GridCandidate, MAX_GRID_BYTES, SteamGridDbClient};
 pub use credentials::{KeyringTokenStore, MemoryTokenStore, TokenStore};
 pub use discovery::{DiscoveredGame, DiscoverySource};
 pub use engine::SaveSyncEngine;

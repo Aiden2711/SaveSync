@@ -85,6 +85,12 @@ pub struct HttpRequest {
     /// When set, the response body is streamed to this path instead of being
     /// buffered in [`HttpResponse::body`].
     pub download_to: Option<PathBuf>,
+    /// Optional cap enforced *while* the body is streamed to
+    /// [`Self::download_to`].
+    ///
+    /// Ignored when `download_to` is `None`. `None` (the default) keeps the
+    /// historical behaviour of streaming without a limit.
+    pub max_download_bytes: Option<u64>,
 }
 
 impl HttpRequest {
@@ -95,6 +101,7 @@ impl HttpRequest {
             headers: Vec::new(),
             body: None,
             download_to: None,
+            max_download_bytes: None,
         }
     }
 
@@ -110,6 +117,16 @@ impl HttpRequest {
 
     pub fn download_to(mut self, path: impl Into<PathBuf>) -> Self {
         self.download_to = Some(path.into());
+        self
+    }
+
+    /// Refuse to stream more than `limit` bytes to [`Self::download_to`].
+    ///
+    /// Without a cap, a hostile or broken response can write an unbounded
+    /// amount of data before the caller ever inspects it. With a cap, copying
+    /// stops at the limit and the partial file is removed.
+    pub fn max_download_bytes(mut self, limit: u64) -> Self {
+        self.max_download_bytes = Some(limit);
         self
     }
 
@@ -158,6 +175,21 @@ impl ReqwestTransport {
         let client = reqwest::blocking::Client::builder()
             .connect_timeout(Duration::from_secs(15))
             .timeout(timeout)
+            .build()
+            .map_err(|error| Error::Network(error.to_string()))?;
+        Ok(Self { client, timeout })
+    }
+
+    /// Transport that never follows redirects.
+    ///
+    /// Used where the caller has already validated the exact destination host
+    /// (for example artwork downloads), so a `3xx` must fail instead of
+    /// silently moving the request to a host that was never checked.
+    pub fn without_redirects(timeout: Duration) -> Result<Self> {
+        let client = reqwest::blocking::Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| Error::Network(error.to_string()))?;
         Ok(Self { client, timeout })
@@ -224,7 +256,20 @@ impl HttpTransport for ReqwestTransport {
                 std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
             }
             let mut file = File::create(path).map_err(|e| Error::io(path, e))?;
-            std::io::copy(&mut response, &mut file).map_err(|e| Error::io(path, e))?;
+            match request.max_download_bytes {
+                Some(limit) => {
+                    if let Err(error) = copy_bounded(&mut response, &mut file, limit) {
+                        // Close the handle before unlinking so the partial
+                        // file can be removed on every platform.
+                        drop(file);
+                        let _ = std::fs::remove_file(path);
+                        return Err(error);
+                    }
+                }
+                None => {
+                    std::io::copy(&mut response, &mut file).map_err(|e| Error::io(path, e))?;
+                }
+            }
             file.flush().map_err(|e| Error::io(path, e))?;
             Vec::new()
         } else {
@@ -240,6 +285,34 @@ impl HttpTransport for ReqwestTransport {
             headers,
             body,
         })
+    }
+}
+
+/// Message used when a download streams past its configured byte cap.
+const DOWNLOAD_LIMIT_EXCEEDED: &str = "download exceeded the configured size limit";
+
+/// Copy at most `limit` bytes from `reader` into `file`.
+///
+/// Returns the number of bytes written. As soon as the source yields more than
+/// `limit` bytes, copying stops *before* the surplus is written and
+/// [`Error::InvalidState`] is returned, so an untrusted response can never put
+/// more than `limit` bytes on disk.
+fn copy_bounded(reader: &mut impl Read, file: &mut File, limit: u64) -> Result<u64> {
+    const CHUNK_BYTES: usize = 64 * 1024;
+
+    let mut buffer = [0u8; CHUNK_BYTES];
+    let mut written = 0u64;
+    loop {
+        let read = reader.read(&mut buffer).map_err(Error::from)?;
+        if read == 0 {
+            return Ok(written);
+        }
+        let chunk = read as u64;
+        if written.saturating_add(chunk) > limit {
+            return Err(Error::InvalidState(DOWNLOAD_LIMIT_EXCEEDED.to_string()));
+        }
+        file.write_all(&buffer[..read]).map_err(Error::from)?;
+        written += chunk;
     }
 }
 
@@ -364,6 +437,64 @@ fn retry_after(response: &HttpResponse) -> Option<Duration> {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn new_request_has_no_download_cap() {
+        // Existing callers must keep the unbounded streaming behaviour.
+        let request = HttpRequest::new(HttpMethod::Get, "https://example.invalid/file");
+        assert_eq!(request.max_download_bytes, None);
+
+        let capped = HttpRequest::new(HttpMethod::Get, "https://example.invalid/file")
+            .max_download_bytes(1234);
+        assert_eq!(capped.max_download_bytes, Some(1234));
+    }
+
+    #[test]
+    fn copy_bounded_copies_input_under_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("payload.bin");
+        let mut file = File::create(&path).unwrap();
+        let payload = vec![7u8; 4096];
+        let mut reader = std::io::Cursor::new(payload.clone());
+
+        let written = copy_bounded(&mut reader, &mut file, 8192).unwrap();
+
+        assert_eq!(written, payload.len() as u64);
+        drop(file);
+        assert_eq!(std::fs::read(&path).unwrap(), payload);
+    }
+
+    #[test]
+    fn copy_bounded_allows_exactly_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("payload.bin");
+        let mut file = File::create(&path).unwrap();
+        let mut reader = std::io::Cursor::new(vec![3u8; 1024]);
+
+        let written = copy_bounded(&mut reader, &mut file, 1024).unwrap();
+
+        assert_eq!(written, 1024);
+    }
+
+    #[test]
+    fn copy_bounded_refuses_input_over_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("payload.bin");
+        let mut file = File::create(&path).unwrap();
+        let mut reader = std::io::Cursor::new(vec![1u8; 10 * 1024]);
+
+        let error = copy_bounded(&mut reader, &mut file, 1024).unwrap_err();
+
+        assert!(matches!(error, Error::InvalidState(_)));
+        assert!(format!("{error}").contains("size limit"));
+
+        drop(file);
+        let written = std::fs::metadata(&path).unwrap().len();
+        assert!(
+            written <= 1024,
+            "wrote {written} bytes to disk despite a 1024 byte cap"
+        );
+    }
 
     #[test]
     fn backoff_is_bounded_and_monotonic() {
