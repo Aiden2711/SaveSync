@@ -128,11 +128,11 @@ beforeAll(async () => {
   // before any rule lookup can be believed. These two assertions are the
   // difference between a real check and a vacuous pass.
   expect(source.length).toBeGreaterThan(0);
-  expect(source).toContain(".tile--hero");
+  expect(source).toContain(".tile-grid");
   CSS_RULES = parseRules(source);
   expect(CSS_RULES.length).toBeGreaterThan(0);
-  // The `@media` scan must produce rules, or `mediaDeclarationsFor` below would
-  // be vacuously unsatisfiable/empty and the collapse check meaningless.
+  // The `@media` scan must also produce rules, or the parser has silently
+  // mis-nested every block after the first at-rule.
   expect(CSS_RULES.some((rule) => rule.media !== null)).toBe(true);
 });
 
@@ -157,13 +157,7 @@ function declarationsFor(selector: string): string[] {
   );
 }
 
-/** Declarations for `selector` inside the `@media` block with this prelude. */
-function mediaDeclarationsFor(media: string, selector: string): string[] {
-  return declarationsWhere(
-    (rule) => rule.selector === selector && rule.media === media,
-  );
-}
-
+/** Declarations from rules that match `match`. */
 function declarationsWhere(match: (rule: CssRule) => boolean): string[] {
   return CSS_RULES.filter(match).flatMap((rule) => rule.declarations);
 }
@@ -202,7 +196,7 @@ function tiles(): HTMLElement[] {
 }
 
 describe("library tile grid", () => {
-  it("renders the first enrolled game as the hero and spans two columns", async () => {
+  it("renders one equal channel per enrolled game", async () => {
     render(<App />);
     await screen.findByRole("button", { name: /Hades/ });
 
@@ -210,149 +204,126 @@ describe("library tile grid", () => {
     const rendered = tiles();
 
     expect(rendered).toHaveLength(fixtures.games.length);
-    expect(grid.querySelectorAll(".tile--hero")).toHaveLength(1);
-
-    const hero = rendered[0];
-    expect(hero).toHaveClass("tile", "tile--hero");
-    expect(within(hero).getByText("Hades")).toBeInTheDocument();
+    expect(within(rendered[0]).getByText("Hades")).toBeInTheDocument();
 
     /*
-     * The span has to reach a grid item.
-     *
-     * `grid-column` does nothing on a non-grid-item, so a stylesheet that says
-     * `.tile--hero { grid-column: span 2 }` while `.tile--hero` sits on the
-     * button *inside* the cell renders an ordinary one-column tile. Asserting
-     * that the text exists passed for exactly that broken layout, so the check
-     * is now structural: the rule's class must be on the hero's grid item, that
-     * item must be a direct child of `.tile-grid`, and it must be the first one.
+     * Every tile is one channel. A promoted "first game" hero tile made the
+     * first row ragged and contradicted the console grid this design follows,
+     * so no tile may span two tracks.
      */
-    const heroItem = hero.parentElement;
-    if (!(heroItem instanceof HTMLElement)) {
-      throw new Error("expected the hero tile to sit in a grid cell");
-    }
-    expect(heroItem.parentElement).toBe(grid);
-    expect(grid.firstElementChild).toBe(heroItem);
-    expect(heroItem).toHaveClass("tile-cell", "tile-cell--hero");
     expect(grid.querySelectorAll(".tile-cell")).toHaveLength(
       fixtures.games.length,
     );
-    expect(grid.querySelectorAll(".tile-cell--hero")).toHaveLength(1);
+    expect(grid.querySelectorAll(".tile-cell--hero")).toHaveLength(0);
+    expect(grid.querySelectorAll(".tile--hero")).toHaveLength(0);
     // Every rendered tile lives in its own cell, and no cell holds two tiles.
     expect(rendered.map((tile) => tile.parentElement)).toEqual(
       Array.from(grid.children),
     );
-
-    // Exactly one top-level rule grants two tracks, and it targets the class
-    // carried by that grid item — never an element nested inside it.
     expect(
       CSS_RULES.filter(
         (rule) =>
           rule.media === null &&
-          rule.declarations.includes("grid-column: span 2"),
-      ).map((rule) => rule.selector),
-    ).toEqual([".tile-cell--hero"]);
-    expect(declarationsFor(".tile-cell--hero")).toEqual(["grid-column: span 2"]);
-    // `.tile--hero` is the inner button's marker for the art ratio; a span on it
-    // is the inert declaration this test now exists to prevent.
-    expect(declarationsFor(".tile--hero")).toEqual([]);
+          rule.declarations.some((declaration) =>
+            declaration.startsWith("grid-column: span"),
+          ),
+      ),
+    ).toEqual([]);
 
-    // The narrow-viewport collapse must not be readable as the base rule.
-    expect(
-      mediaDeclarationsFor("@media (max-width: 560px)", ".tile-cell--hero"),
-    ).toEqual(["grid-column: span 1"]);
-    expect(declarationsFor(".tile-cell--hero")).not.toContain(
-      "grid-column: span 1",
+    // Uniform 2:3 art, and the art box is the clip the art fills.
+    expect(declarationsFor(".tile-art")).toContain("aspect-ratio: 2 / 3");
+    expect(declarationsFor(".tile-art .cover-art")).toContain(
+      "position: absolute",
     );
-
-    expect(declarationsFor(".tile-art")).toContain("aspect-ratio: 4 / 5");
-    expect(declarationsFor(".tile--hero .tile-art")).toContain(
-      "aspect-ratio: 2 / 1",
-    );
-
-    /*
-     * The hero band is 2:1 while the generated cover is a 3:4 portrait, which
-     * letterboxed into a small centred thumbnail on a grey field. The hero lets
-     * the SVG take the band's width and keeps the band as the clip, so the art
-     * covers it. (The resulting geometry is verified in Chromium; jsdom has no
-     * layout engine.)
-     */
-    expect(declarationsFor(".tile--hero .tile-art .cover-art")).toContain(
-      "display: grid",
-    );
-    expect(declarationsFor(".tile--hero .tile-art .cover-art svg")).toEqual([
-      "width: 100%",
-      "height: auto",
-    ]);
-    // The standard 4:5 tiles must keep the default fit, untouched.
-    expect(declarationsFor(".tile-art .cover-art svg")).toEqual([]);
+    expect(declarationsFor(".tile-art .cover-art")).toContain("inset: 0");
+    expect(declarationsFor(".tile-art .cover-art svg")).toContain("width: 100%");
+    expect(declarationsFor(".tile-art .cover-art svg")).toContain("height: 100%");
   });
 
-  it("falls back to the title's mono initial for games without cover art", async () => {
+  it("gives every game generated cover art instead of a bare initial", async () => {
     render(<App />);
     await screen.findByRole("button", { name: /Hades/ });
 
-    // The fixtures model a library before real cover art exists.
+    // The fixtures model a library before real cover art exists; the grid must
+    // still read as a game library, so art is generated rather than skipped.
     expect(fixtures.games.every((game) => game.cover_path === null)).toBe(true);
-    expect(tileGrid().querySelectorAll(".cover-art")).toHaveLength(0);
+    const covers = Array.from(tileGrid().querySelectorAll(".cover-art"));
+    expect(covers).toHaveLength(fixtures.games.length);
 
     // Hades, Hollow Knight, Celeste, Stardew Valley — in grid order.
-    expect(
-      Array.from(tileGrid().querySelectorAll(".tile-mono")).map((node) =>
-        node.textContent?.trim(),
-      ),
-    ).toEqual(["H", "H", "C", "S"]);
+    expect(covers.map((cover) => cover.querySelector("text")?.textContent)).toEqual([
+      "H",
+      "HK",
+      "C",
+      "SV",
+    ]);
 
-    const mono = declarationsFor(".tile-mono");
-    expect(mono).toContain("font-family: var(--font-text)");
-    expect(mono.join("; ")).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
-    expect(mono.join("; ")).not.toMatch(/\b(rgb|rgba|hsl|hsla)\(/);
-  });
+    // The art is decoration; the tile button carries the accessible name.
+    for (const cover of covers) {
+      expect(cover).toHaveAttribute("aria-hidden", "true");
+    }
+    expect(tileGrid().querySelectorAll(".tile-mono")).toHaveLength(0);
 
-  it("uses --line, never the accent, for the selected tile's border and text", () => {
-    const selected = declarationsFor('.tile[aria-current="true"]');
-
-    expect(selected).toContain("border-color: var(--line)");
-    // The browser resolves the token; it must land on --line, not the amber.
-    expect(resolveTokens("border-color: var(--line)")).toBe(
-      `border-color: ${tokenValue("--line")}`,
-    );
-    expect(tokenValue("--line")).not.toBe(tokenValue("--accent"));
-    expect(selected.join("; ")).not.toContain("#e8a33d");
-    expect(selected.join("; ")).not.toMatch(/accent/i);
-
-    const check = declarationsFor('.tile[aria-current="true"] .tile-check');
-    expect(check).toContain("border-color: var(--line)");
-    expect(check).toContain("color: var(--ink-2)");
-    expect(check.join("; ")).not.toMatch(/accent/i);
-
-    // No tile rule anywhere may reach for the accent or a raw colour literal.
-    expect(tileDeclarations()).not.toMatch(/accent/i);
+    // No tile rule may reach for a raw colour literal: generated art is the
+    // only place that carries its own palette, and it is drawn by SVG fills.
     expect(tileDeclarations()).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
     expect(tileDeclarations()).not.toMatch(/\b(rgb|rgba|hsl|hsla)\(/);
   });
 
-  it("keeps the hero label directly under its art (mockup dead-space fix)", () => {
-    // A bottom-anchored label inside a stretched two-column cell is what left
-    // ~108px between the mockup's hero art and its title.
+  it("uses a neutral outline, never the accent, for the selected tile", () => {
+    const selected = declarationsFor('.tile[aria-current="true"]');
+
+    expect(selected).toContain("border-color: var(--line-strong)");
+    expect(selected).toContain("outline: 2px solid var(--focus-ring)");
+    // The browser resolves the token; it must land on a neutral, not the blue.
+    expect(resolveTokens("border-color: var(--line-strong)")).toBe(
+      `border-color: ${tokenValue("--line-strong")}`,
+    );
+    expect(tokenValue("--line-strong")).not.toBe(tokenValue("--accent"));
+    expect(selected.join("; ")).not.toMatch(/accent/i);
+
+    const check = declarationsFor('.tile[aria-current="true"] .tile-check');
+    expect(check).toContain("border-color: var(--line-strong)");
+    expect(check).toContain("color: var(--ink)");
+    expect(check.join("; ")).not.toMatch(/accent/i);
+
+    // No tile rule anywhere may reach for the accent fill.
+    expect(tileDeclarations()).not.toMatch(/var\(--accent/);
+  });
+
+  it("keeps every label directly under its own art", async () => {
+    render(<App />);
+    await screen.findByRole("button", { name: /Hades/ });
+
+    // A bottom-anchored label inside a stretched cell is what once left ~108px
+    // between art and title. Cells top-align and tiles are top-anchored columns.
     expect(tileDeclarations()).not.toMatch(/margin-top:\s*auto/);
     expect(declarationsFor(".tile-grid")).toContain("align-items: start");
     expect(declarationsFor(".tile")).toContain("justify-content: flex-start");
-
-    // Hero and standard tiles share one label rule, so their art-to-title gap
-    // is identical; the hero must not add spacing of its own.
-    expect(declarationsFor(".tile--hero .tile-label")).toEqual([]);
-    expect(declarationsFor(".tile--hero .tile-title")).toEqual([]);
     expect(declarationsFor(".tile-label")).toContain(
       "padding: var(--space-2xs) var(--space-xs) var(--space-xs)",
     );
+
+    // One label rule for every tile: art first, label second, in that order.
+    const tile = tiles()[0];
+    expect(tile.children[0]).toHaveClass("tile-art");
+    expect(tile.children[1]).toHaveClass("tile-label");
   });
 
   it("keeps tile text at or above the readability floor", () => {
     expect(Number.parseFloat(tokenValue("--text-sm"))).toBeGreaterThanOrEqual(15);
     expect(Number.parseFloat(tokenValue("--text-2xs"))).toBeGreaterThanOrEqual(14);
 
-    expect(declarationsFor(".tile-title")).toContain("font-size: var(--text-sm)");
+    expect(declarationsFor(".tile-title")).toContain("font-size: var(--text-md)");
     expect(declarationsFor(".tile-acc")).toContain("font-size: var(--text-2xs)");
+    // The title is content, so it takes the display face; the meta line stays
+    // in the UI face and never drops to mono or below 14px.
+    expect(declarationsFor(".tile-title")).toContain(
+      "font-family: var(--font-display)",
+    );
+    expect(declarationsFor(".tile-acc")).not.toContain(
+      "font-family: var(--font-mono)",
+    );
   });
 
   it("keeps the game title in the tile button's accessible name", async () => {
@@ -360,7 +331,7 @@ describe("library tile grid", () => {
     render(<App />);
 
     const tile = await screen.findByRole("button", { name: /Hades/ });
-    expect(tile).toHaveClass("tile", "tile--hero");
+    expect(tile).toHaveClass("tile");
     expect(tile).toHaveAccessibleName(/Hades/);
 
     // Selecting a game still reaches the inline history rows that

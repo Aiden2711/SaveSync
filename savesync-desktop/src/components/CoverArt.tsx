@@ -1,14 +1,13 @@
 import { memo, useMemo } from "react";
 import { coverFor } from "../lib/cover";
 
-const MONO_FONT = '"Cascadia Mono", ui-monospace, monospace';
-
 /**
- * Emblem centre. Every motif is stroked around this point so the three
- * variants share one optical size and sit clear of the inner frame.
+ * Crest centre. Every motif is drawn around this point, and the monogram sits
+ * on it, so the three motifs share one optical size and stay centred when the
+ * featured tile crops the 2:3 cover to a 16:9 band.
  */
-const EMBLEM_X = 150;
-const EMBLEM_Y = 188;
+const CREST_X = 300;
+const CREST_Y = 436;
 
 interface CoverArtProps {
   title: string;
@@ -16,99 +15,134 @@ interface CoverArtProps {
 }
 
 /**
- * Decorative generated cover: a flat cartridge label with an inner frame, one
- * stroked emblem and a small catalog-code monogram. The adapter is not drawn —
- * it is already shown under the card and in the detail meta — but it is kept on
- * the wrapper as a data attribute for styling hooks.
+ * Generated cover art: a cool two-tone field, one clipped crest motif and the
+ * title's monogram set in the display face.
  *
- * Purely presentational: the surrounding button carries the accessible name.
+ * Purely presentational — `aria-hidden` — because the surrounding tile button
+ * carries the accessible name. `preserveAspectRatio="xMidYMid slice"` lets the
+ * same artwork fill a 2:3 tile and a 16:9 featured band without letterboxing.
  */
 function CoverArt({ title, adapter }: CoverArtProps) {
   const { palette, motif, monogram } = useMemo(() => coverFor(title), [title]);
-
-  const emblemStroke = {
-    fill: "none",
-    stroke: palette.accent,
-    strokeWidth: 2,
-    vectorEffect: "non-scaling-stroke",
-    strokeLinecap: "round",
-  } as const;
+  const glyphSize = Array.from(monogram).length > 1 ? 216 : 268;
 
   return (
-    <span className="cover-art" data-adapter={adapter}>
-      <svg
-        viewBox="0 0 300 400"
-        preserveAspectRatio="xMidYMid meet"
-        aria-hidden="true"
-        focusable="false"
-      >
-        <rect width="300" height="400" fill={palette.bg} />
+    <span className="cover-art" data-adapter={adapter} aria-hidden="true">
+      <svg viewBox="0 0 600 900" preserveAspectRatio="xMidYMid slice" focusable="false">
+        <rect width="600" height="900" fill={palette.bg} />
 
+        {/* One large flat shape breaks the field into two tones. */}
         <rect
-          x="20"
-          y="20"
-          width="260"
-          height="360"
-          fill="none"
-          stroke={palette.ink}
-          strokeOpacity="0.18"
-          strokeWidth="1"
-          vectorEffect="non-scaling-stroke"
+          x="-170"
+          y="-210"
+          width="580"
+          height="560"
+          rx="150"
+          fill={palette.bg2}
+        />
+        <rect
+          x="330"
+          y="600"
+          width="380"
+          height="380"
+          rx="140"
+          fill={palette.bg2}
+          opacity="0.55"
         />
 
-        {/*
-          Motif geometry stays clear of the viewBox edges. A square rotated 45°
-          spans side * √2, so the 74/37 sides read as ~104/52 diamonds and keep
-          the mark inside roughly 96..204 horizontally.
-        */}
-        {motif === "squares" && (
-          <>
-            <rect
-              x={EMBLEM_X - 37}
-              y={EMBLEM_Y - 37}
-              width="74"
-              height="74"
-              transform={`rotate(45 ${EMBLEM_X} ${EMBLEM_Y})`}
-              {...emblemStroke}
-            />
-            <rect
-              x={EMBLEM_X - 18.5}
-              y={EMBLEM_Y - 18.5}
-              width="37"
-              height="37"
-              transform={`rotate(45 ${EMBLEM_X} ${EMBLEM_Y})`}
-              {...emblemStroke}
-            />
-          </>
-        )}
+        <g fill="none" stroke={palette.accent} strokeWidth="2.5">
+          {motif === "rings" && (
+            <>
+              <rect
+                x={CREST_X - 232}
+                y={CREST_Y - 232}
+                width="464"
+                height="464"
+                rx="128"
+                opacity="0.34"
+              />
+              <rect
+                x={CREST_X - 176}
+                y={CREST_Y - 176}
+                width="352"
+                height="352"
+                rx="100"
+                opacity="0.5"
+              />
+              <rect
+                x={CREST_X - 120}
+                y={CREST_Y - 120}
+                width="240"
+                height="240"
+                rx="70"
+                opacity="0.7"
+              />
+            </>
+          )}
 
-        {motif === "circle" && (
-          <>
-            <circle cx={EMBLEM_X} cy={EMBLEM_Y} r="52" {...emblemStroke} />
-            <circle cx={EMBLEM_X} cy={EMBLEM_Y} r="26" {...emblemStroke} />
-          </>
-        )}
+          {motif === "orbit" && (
+            <>
+              <circle cx={CREST_X} cy={CREST_Y} r="222" opacity="0.3" />
+              <circle cx={CREST_X} cy={CREST_Y} r="166" opacity="0.46" />
+              <circle cx={CREST_X} cy={CREST_Y} r="110" opacity="0.68" />
+            </>
+          )}
 
-        {motif === "diagonal" && (
-          <>
-            <line x1="108" y1="224" x2="192" y2="140" {...emblemStroke} />
-            <line x1="140" y1="224" x2="192" y2="172" {...emblemStroke} />
-            <line x1="108" y1="192" x2="160" y2="140" {...emblemStroke} />
-          </>
-        )}
+          {motif === "slats" && (
+            <g transform={`rotate(-18 ${CREST_X} ${CREST_Y})`} strokeLinecap="round">
+              <line
+                x1={CREST_X - 190}
+                y1={CREST_Y - 96}
+                x2={CREST_X + 190}
+                y2={CREST_Y - 96}
+                opacity="0.3"
+                strokeWidth="30"
+              />
+              <line
+                x1={CREST_X - 214}
+                y1={CREST_Y}
+                x2={CREST_X + 214}
+                y2={CREST_Y}
+                opacity="0.46"
+                strokeWidth="30"
+              />
+              <line
+                x1={CREST_X - 190}
+                y1={CREST_Y + 96}
+                x2={CREST_X + 190}
+                y2={CREST_Y + 96}
+                opacity="0.68"
+                strokeWidth="30"
+              />
+            </g>
+          )}
+        </g>
 
         <text
-          x={EMBLEM_X}
-          y="322"
+          x={CREST_X}
+          y={CREST_Y}
           textAnchor="middle"
+          dominantBaseline="central"
           fill={palette.ink}
-          fontFamily={MONO_FONT}
-          fontSize="44"
-          fontWeight="500"
-          letterSpacing="6"
+          fontFamily='"Fredoka", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif'
+          fontSize={glyphSize}
+          fontWeight="600"
+          letterSpacing="-8"
         >
           {monogram}
         </text>
+
+        <rect
+          x="28"
+          y="28"
+          width="544"
+          height="844"
+          rx="26"
+          fill="none"
+          stroke={palette.ink}
+          strokeOpacity="0.14"
+          strokeWidth="1.5"
+        />
       </svg>
     </span>
   );

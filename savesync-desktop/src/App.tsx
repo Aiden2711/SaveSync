@@ -78,18 +78,6 @@ function shortId(id: string): string {
 }
 
 /**
- * Initial letter of a game title, used by the tile art slot when the game has
- * no cover art yet. Skips leading punctuation/whitespace so "'-Hades'" still
- * reads as "H", and falls back to "?" for a title with no letters or digits.
- * Rendered with the mono text stack by `.tile-mono`; this helper only decides
- * the character.
- */
-function tileInitial(title: string): string {
-  const letter = title.match(/[\p{L}\p{N}]/u);
-  return letter ? letter[0].toUpperCase() : "?";
-}
-
-/**
  * First focusable control inside a dialog, in DOM order. Keyboard users land on
  * Cancel, which is rendered first in every confirmation dialog.
  */
@@ -228,6 +216,8 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const [unlinkConfirming, setUnlinkConfirming] = useState(false);
+  /** Game awaiting "Remove from library" confirmation. */
+  const [pendingUnlinkId, setPendingUnlinkId] = useState<string | null>(null);
 
   const [title, setTitle] = useState("");
   const [savePath, setSavePath] = useState("");
@@ -280,6 +270,15 @@ export default function App() {
       setMenuPosition(null);
       setMenuGameId(null);
       menuTriggerRef.current?.focus();
+      menuTriggerRef.current = null;
+      return;
+    }
+
+    // Tabbing out of a menu dismisses it, as native menus do. Focus is left to
+    // the browser so it lands on the next control in the page order.
+    if (event.key === "Tab") {
+      setMenuPosition(null);
+      setMenuGameId(null);
       menuTriggerRef.current = null;
       return;
     }
@@ -533,7 +532,9 @@ export default function App() {
         `Snapshot saved: ${result.file_count} file(s), ${formatBytes(result.total_bytes)}.`,
       );
       await loadGames();
-      await loadGameDetails(gameId);
+      // Only the open detail view owns `revisions`; refreshing it for a game the
+      // user has not opened would show one game's history under another's name.
+      if (selectedId === gameId) await loadGameDetails(gameId);
     }
   }
 
@@ -546,7 +547,7 @@ export default function App() {
         `Sync complete: ${report.pulled_revisions} pulled, ${report.pushed_revisions} pushed, ${report.conflict_ids.length} conflict(s).`,
       );
       await loadGames();
-      await loadGameDetails(gameId);
+      if (selectedId === gameId) await loadGameDetails(gameId);
     }
   }
 
@@ -682,23 +683,30 @@ export default function App() {
     }
   }
 
-  const openMenu = useCallback(
-    (event: React.MouseEvent, gameId: string) => {
-      event.preventDefault();
-      setSelectedId(gameId);
+  /**
+   * Open the game context menu at a point, without navigating.
+   *
+   * Right-clicking a tile is a request for that game's actions, not a request
+   * to leave the library: `selectedId` (which drives the detail view) is left
+   * untouched here and only changes when "Open details" is chosen.
+   */
+  const openMenuAt = useCallback(
+    (point: { x: number; y: number }, gameId: string, trigger: HTMLElement) => {
       setMenuGameId(gameId);
       const topbarEl = document.querySelector<HTMLElement>(".topbar");
-      const topInset = topbarEl ? topbarEl.getBoundingClientRect().bottom + 8 : TOPBAR_FALLBACK_HEIGHT;
+      const topInset = topbarEl
+        ? topbarEl.getBoundingClientRect().bottom + 8
+        : TOPBAR_FALLBACK_HEIGHT;
       const pos = clampMenuPosition(
-        { x: event.clientX, y: event.clientY },
+        point,
         MENU_SIZE,
         { width: window.innerWidth, height: window.innerHeight },
         topInset,
       );
       setMenuPosition(pos);
-      // Store the triggering element so Escape can return focus to it
-      menuTriggerRef.current = event.currentTarget as HTMLElement;
-      // Focus first enabled menu item after render
+      // Store the triggering element so Escape can return focus to it.
+      menuTriggerRef.current = trigger;
+      // Focus the first enabled menu item after render.
       requestAnimationFrame(() => {
         const items = menuRef.current?.querySelectorAll<HTMLButtonElement>("[role='menuitem']");
         if (!items) return;
@@ -712,25 +720,84 @@ export default function App() {
     [],
   );
 
+  const openMenu = useCallback(
+    (event: React.MouseEvent, gameId: string) => {
+      event.preventDefault();
+      openMenuAt(
+        { x: event.clientX, y: event.clientY },
+        gameId,
+        event.currentTarget as HTMLElement,
+      );
+    },
+    [openMenuAt],
+  );
+
+  /** Keyboard equivalent of right-click: ContextMenu key or Shift+F10. */
+  const openMenuFromKeyboard = useCallback(
+    (event: React.KeyboardEvent<HTMLElement>, gameId: string) => {
+      const isContextKey =
+        event.key === "ContextMenu" || (event.shiftKey && event.key === "F10");
+      if (!isContextKey) return;
+      event.preventDefault();
+      const rect = event.currentTarget.getBoundingClientRect();
+      openMenuAt(
+        { x: rect.left + Math.min(rect.width, 48), y: rect.top + 32 },
+        gameId,
+        event.currentTarget,
+      );
+    },
+    [openMenuAt],
+  );
+
+  const closeMenu = useCallback(() => {
+    setMenuPosition(null);
+    setMenuGameId(null);
+  }, []);
+
+  /**
+   * "Restore latest…" from the context menu. The menu can target a game whose
+   * history is not loaded (it no longer changes the selection), so fetch that
+   * game's revisions on demand instead of reading another game's state.
+   */
+  const restoreLatest = useCallback(
+    async (gameId: string, headRevisionId: string) => {
+      const history = await run("Loading snapshots", () => api.history(gameId));
+      const revision = history?.find((item) => item.id === headRevisionId);
+      if (revision) {
+        setDialogState({ kind: "restore", revision, exactMirror: false });
+      }
+    },
+    [run],
+  );
+
+  /**
+   * Unlink targets the game the menu was opened on, which is not necessarily
+   * the selected one: right-clicking never changes the library's selection.
+   */
   const handleUnlink = useCallback(async () => {
-    if (!selectedId) return;
-    const result = await run("Unlinking game", () => api.unlinkGame(selectedId));
+    const gameId = pendingUnlinkId;
+    if (!gameId) return;
+    const result = await run("Unlinking game", () => api.unlinkGame(gameId));
     if (result) {
       playCartridgeSound("eject");
-      setSelectedId(null);
-      setMenuPosition(null);
+      setSelectedId((current) => (current === gameId ? null : current));
       setUnlinkConfirming(false);
+      setPendingUnlinkId(null);
       setNotice("Removed from library. Revisions and on-disk backups are preserved.");
+      await loadGames();
     }
-  }, [selectedId]);
+  }, [loadGames, pendingUnlinkId, run]);
 
-  const openUnlinkDialog = useCallback(() => {
+  const openUnlinkDialog = useCallback((gameId: string) => {
+    setPendingUnlinkId(gameId);
     setUnlinkConfirming(true);
     setMenuPosition(null);
+    setMenuGameId(null);
   }, []);
 
   const closeUnlinkDialog = useCallback(() => {
     setUnlinkConfirming(false);
+    setPendingUnlinkId(null);
   }, []);
 
   const openEnrollDialog = useCallback(() => {
@@ -759,7 +826,6 @@ export default function App() {
       <section className="view" aria-labelledby="library-title">
         <header className="view-header">
           <div>
-            <p className="eyebrow">Library</p>
             <h2 id="library-title">Game library</h2>
             <p className="sub">
               {games.length} game{games.length === 1 ? "" : "s"} enrolled
@@ -780,29 +846,21 @@ export default function App() {
           </div>
         ) : (
           <ul className="tile-grid">
-            {games.map((game, index) => {
+            {games.map((game) => {
               const isSelected = game.id === selectedId;
               const isDirty = dirtyGames.has(game.id);
-              // The first enrolled game fills the two-column hero slot.
-              const isHero = index === 0;
               return (
-                <li
-                  key={game.id}
-                  className={isHero ? "tile-cell tile-cell--hero" : "tile-cell"}
-                >
+                <li key={game.id} className="tile-cell">
                   <button
                     type="button"
-                    className={isHero ? "tile tile--hero" : "tile"}
+                    className="tile"
                     aria-current={isSelected ? "true" : undefined}
                     onClick={() => setSelectedId(game.id)}
                     onContextMenu={(event) => openMenu(event, game.id)}
+                    onKeyDown={(event) => openMenuFromKeyboard(event, game.id)}
                   >
-                    <span className="tile-art" aria-hidden="true">
-                      {game.cover_path ? (
-                        <CoverArt title={game.title} adapter={game.adapter_type} />
-                      ) : (
-                        <span className="tile-mono">{tileInitial(game.title)}</span>
-                      )}
+                    <span className="tile-art">
+                      <CoverArt title={game.title} adapter={game.adapter_type} />
                     </span>
                     <span className="tile-label">
                       <span className="tile-head">
@@ -811,14 +869,17 @@ export default function App() {
                           <span
                             className="dirty-badge"
                             aria-label="Uncaptured save changes"
+                            title="Uncaptured save changes"
                           />
                         )}
                       </span>
                       <span className="tile-acc">
-                        {adapterLabel(game.adapter_type)} ·{" "}
+                        {adapterLabel(game.adapter_type)}
+                      </span>
+                      <span className="tile-acc">
                         {game.active_head_revision_id
-                          ? `head ${shortId(game.active_head_revision_id)}`
-                          : "No snapshots"}
+                          ? "Backed up"
+                          : "No snapshots yet"}
                       </span>
                     </span>
                     <span className="tile-check" aria-hidden="true">
@@ -862,7 +923,6 @@ export default function App() {
             <CoverArt title={game.title} adapter={game.adapter_type} />
           </div>
           <div className="detail-copy">
-            <p className="eyebrow">Game</p>
             <h2 id="game-title">{game.title}</h2>
             {dirtyGames.has(game.id) && (
               <span
@@ -1025,7 +1085,6 @@ export default function App() {
       <section className="view" aria-labelledby="pick-game-title">
         <header className="view-header">
           <div>
-            <p className="eyebrow">{section}</p>
             <h2 id="pick-game-title">{heading}</h2>
             <p className="sub">
               Open a game from the library to review its {subject}.
@@ -1051,7 +1110,6 @@ export default function App() {
       <section className="view" aria-labelledby="cloud-title">
         <header className="view-header">
           <div>
-            <p className="eyebrow">Cloud</p>
             <h2 id="cloud-title">Cloud sync</h2>
             <p className="sub">
               Optional and manual. Local snapshots and restores work offline.
@@ -1062,10 +1120,13 @@ export default function App() {
         <section className="panel drive-panel" aria-labelledby="drive-panel-title">
           <div className="panel-title">
             <h2 id="drive-panel-title">Google Drive</h2>
-            <span
-              className={drive.connected ? "dot online" : "dot"}
-              aria-hidden="true"
-            />
+            <span className={drive.connected ? "status on" : "status"}>
+              {drive.connected
+                ? "Connected"
+                : drive.pending
+                  ? "Waiting for sign-in"
+                  : "Not connected"}
+            </span>
           </div>
           <p className="muted small">
             {drive.connected
@@ -1085,7 +1146,7 @@ export default function App() {
                 spellCheck={false}
               />
             </label>
-            <button className="ghost" type="submit" disabled={!!busy}>
+            <button type="submit" disabled={!!busy}>
               Save client id
             </button>
           </form>
@@ -1161,7 +1222,6 @@ export default function App() {
       <section className="view" aria-labelledby="settings-title">
         <header className="view-header">
           <div>
-            <p className="eyebrow">Settings</p>
             <h2 id="settings-title">Settings</h2>
             <p className="sub">
               Appearance and integrations. Cloud sync stays optional.
@@ -1231,12 +1291,11 @@ export default function App() {
               never written to the SaveSync database or to logs.
             </p>
             <div className="row">
-              <button className="ghost" type="submit" disabled={!!busy}>
+              <button className="primary" type="submit" disabled={!!busy}>
                 Save key
               </button>
               {artworkConfigured && (
                 <button
-                  className="ghost"
                   type="button"
                   onClick={() => void removeSteamGridKey()}
                   disabled={!!busy}
@@ -1252,16 +1311,10 @@ export default function App() {
   }
 
   return (
-    <div className="app grain">
+    <div className="app">
       <header className="topbar">
         <div className="brand">
-          <div className="brand-mark" aria-hidden="true">
-            SS
-          </div>
-          <div className="brand-copy">
-            <h1 className="brand-name">SaveSync</h1>
-            <p className="brand-sub">Local-first save history</p>
-          </div>
+          <h1 className="brand-name">SaveSync</h1>
         </div>
 
         <nav className="nav" aria-label="Primary">
@@ -1382,8 +1435,8 @@ export default function App() {
                 className="menu-item"
                 onClick={(event) => {
                   event.stopPropagation();
-                  setMenuPosition(null);
-                  setMenuGameId(null);
+                  closeMenu();
+                  setSelectedId(menuGameId);
                 }}
               >
                 Open details
@@ -1397,8 +1450,7 @@ export default function App() {
                 title={busy === "Creating snapshot" ? "Creating snapshot…" : "Create a new snapshot of the current save state"}
                 onClick={(event) => {
                   event.stopPropagation();
-                  setMenuPosition(null);
-                  setMenuGameId(null);
+                  closeMenu();
                   if (menuGameId) void takeSnapshotFromMenu(menuGameId);
                 }}
               >
@@ -1413,11 +1465,9 @@ export default function App() {
                 title={hasHead ? "Restore the latest snapshot" : "No snapshot exists yet"}
                 onClick={(event) => {
                   event.stopPropagation();
-                  setMenuPosition(null);
-                  setMenuGameId(null);
+                  closeMenu();
                   if (game?.active_head_revision_id) {
-                    const rev = revisions.find((r) => r.id === game.active_head_revision_id);
-                    if (rev) setDialogState({ kind: "restore", revision: rev, exactMirror: false });
+                    void restoreLatest(game.id, game.active_head_revision_id);
                   }
                 }}
               >
@@ -1438,8 +1488,7 @@ export default function App() {
                 }
                 onClick={(event) => {
                   event.stopPropagation();
-                  setMenuPosition(null);
-                  setMenuGameId(null);
+                  closeMenu();
                   if (menuGameId) void syncGame(menuGameId);
                 }}
               >
@@ -1453,9 +1502,8 @@ export default function App() {
                 className="menu-item menu-item-danger"
                 onClick={(event) => {
                   event.stopPropagation();
-                  setMenuPosition(null);
-                  setMenuGameId(null);
-                  openUnlinkDialog();
+                  closeMenu();
+                  if (menuGameId) openUnlinkDialog(menuGameId);
                 }}
               >
                 Remove from library…
@@ -1514,7 +1562,7 @@ export default function App() {
         </Modal>
       ) : null}
 
-      {unlinkConfirming && selectedId ? (
+      {unlinkConfirming && pendingUnlinkId ? (
         <Modal titleId="unlink-dialog-title" onClose={closeUnlinkDialog}>
           <div className="dialog-card" onClick={(event) => event.stopPropagation()}>
             <h3 id="unlink-dialog-title">Remove from library</h3>

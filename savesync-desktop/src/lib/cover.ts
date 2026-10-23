@@ -1,39 +1,41 @@
 /**
  * Deterministic cover art for the library grid.
  *
- * Covers are generated locally from the game title: independent stable hashes
- * pick a palette and a motif, and the title supplies a small monogram. No
- * network, no images, no randomness, so the same title always renders the same
- * cover.
+ * SaveSync has no artwork provider wired to the frontend yet, so a library must
+ * still read as a game library on first launch. Covers are generated locally
+ * from the game title: independent stable hashes pick a palette and a crest
+ * motif, and the title supplies a monogram. No network, no images, no
+ * randomness, so the same title always renders the same cover.
+ *
+ * The palette family is cool and console-ish on purpose (indigo, steel, teal,
+ * navy, plum) with two light fields mixed in, so a shelf of generated covers
+ * looks varied instead of like a row of placeholders.
  */
 
 export interface CoverPalette {
-  /** Flat background. */
+  /** Primary field. */
   bg: string;
-  /** Monogram; AA contrast against `bg`. */
+  /** Secondary field: one large flat shape behind the crest. */
+  bg2: string;
+  /** Monogram; at least 4.5:1 against `bg`. */
   ink: string;
-  /** Stroked emblem. */
+  /** Crest strokes (decorative). */
   accent: string;
 }
 
-/**
- * Six flat palettes: paper, ink and the single SaveSync cobalt accent.
- *
- * Covers are cartridge labels, not posters, so the palette stays inside the
- * product token set — no second hue, and never the danger red used for
- * destructive actions. Every `ink` keeps at least 5:1 contrast against its
- * `bg` so the monogram stays readable at 160px.
- */
 export const COVER_PALETTES: readonly CoverPalette[] = [
-  { bg: "#E9E5DB", ink: "#1E2230", accent: "#33469B" },
-  { bg: "#F3F0E9", ink: "#1E2230", accent: "#33469B" },
-  { bg: "#D9DEEF", ink: "#1E2230", accent: "#33469B" },
-  { bg: "#33469B", ink: "#F3F0E9", accent: "#B9C4E8" },
-  { bg: "#2A3050", ink: "#F1EEE7", accent: "#8BA1D4" },
-  { bg: "#CFC9BB", ink: "#1E2230", accent: "#33469B" },
+  { bg: "#2b3568", bg2: "#3a4685", ink: "#eef2ff", accent: "#a8b8ff" },
+  { bg: "#33415e", bg2: "#44567a", ink: "#f2f6ff", accent: "#a9c4f5" },
+  { bg: "#10424f", bg2: "#175a69", ink: "#eafcff", accent: "#7fe0f0" },
+  { bg: "#101a33", bg2: "#1b2a4d", ink: "#eaf1ff", accent: "#88a8ff" },
+  { bg: "#3a2340", bg2: "#4d2f56", ink: "#fdf1ff", accent: "#e2a6f0" },
+  { bg: "#084a63", bg2: "#0c6383", ink: "#eafaff", accent: "#8fe3ff" },
+  { bg: "#d8e3f0", bg2: "#c3d4e8", ink: "#101720", accent: "#2f5f9e" },
+  { bg: "#37424e", bg2: "#4a5967", ink: "#f1f6fb", accent: "#b6cddd" },
 ];
 
-export const COVER_MOTIFS = ["diagonal", "squares", "circle"] as const;
+/** Crest motifs: concentric rounded squares, concentric circles, or slats. */
+export const COVER_MOTIFS = ["rings", "orbit", "slats"] as const;
 export type CoverMotif = (typeof COVER_MOTIFS)[number];
 
 export const ADAPTER_LABELS: Record<string, string> = {
@@ -94,16 +96,24 @@ const SKIP_WORDS = new Set([
   "und",
   "et",
   "y",
+  "in",
+  "on",
+  "at",
+  "to",
+  "for",
+  "with",
+  "into",
+  "from",
 ]);
 
 /**
- * One or two letters derived from the title: initials of the first two
- * significant words, or the first two characters of a single-word title.
+ * One or two letters derived from the title. A single-word title renders as one
+ * large channel letter; a multi-word title takes the first letters of its first
+ * and last significant words, so "Ori and the Blind Forest" reads as OF rather
+ * than the arbitrary OB of its first two words.
  */
 export function monogramFor(title: string): string {
-  const folded = title
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "");
+  const folded = title.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
   const words = folded
     .split(/\s+/)
     .map((word) => word.replace(/[^\p{L}\p{N}]/gu, ""))
@@ -112,11 +122,11 @@ export function monogramFor(title: string): string {
 
   if (words.length === 0) return "?";
   if (words.length === 1) {
-    return Array.from(words[0]).slice(0, 2).join("").toUpperCase();
+    return Array.from(words[0])[0].toUpperCase();
   }
   const first = Array.from(words[0])[0];
-  const second = Array.from(words[1])[0];
-  return `${first}${second}`.toUpperCase();
+  const last = Array.from(words[words.length - 1])[0];
+  return `${first}${last}`.toUpperCase();
 }
 
 export interface CoverSpec {
@@ -133,10 +143,8 @@ export interface CoverSpec {
  * looks varied rather than duplicated, while staying deterministic per title.
  */
 export function coverFor(title: string): CoverSpec {
-  const paletteIndex =
-    mix32(fnv1a(`${title}#palette`)) % COVER_PALETTES.length;
-  const motifIndex =
-    mix32(fnv1a(`${title}#motif`)) % COVER_MOTIFS.length;
+  const paletteIndex = mix32(fnv1a(`${title}#palette`)) % COVER_PALETTES.length;
+  const motifIndex = mix32(fnv1a(`${title}#motif`)) % COVER_MOTIFS.length;
   return {
     palette: COVER_PALETTES[paletteIndex],
     motif: COVER_MOTIFS[motifIndex],

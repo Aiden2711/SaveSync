@@ -37,6 +37,55 @@ describe("game tile context menu", () => {
     expect(menu).toBeInTheDocument();
   });
 
+  it("opens the menu without navigating away from the library", async () => {
+    render(<App />);
+    const tile = await screen.findByRole("button", { name: /Hades/ });
+
+    fireEvent.contextMenu(tile, { clientX: 100, clientY: 100 });
+    await screen.findByRole("menu", { name: "Game actions" });
+
+    // The library is still the current view and the tile is not selected:
+    // only "Open details" may change the view.
+    expect(
+      screen.getByRole("heading", { name: "Game library" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Back to library/ })).toBeNull();
+    expect(tile).not.toHaveAttribute("aria-current");
+  });
+
+  it("opens the menu from the keyboard without selecting the game", async () => {
+    render(<App />);
+    const tile = await screen.findByRole("button", { name: /Hades/ });
+
+    fireEvent.keyDown(tile, { key: "F10", shiftKey: true });
+
+    expect(
+      await screen.findByRole("menu", { name: "Game actions" }),
+    ).toBeInTheDocument();
+    expect(tile).not.toHaveAttribute("aria-current");
+  });
+
+  it("loads the targeted game's history before restoring its latest snapshot", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const tile = await screen.findByRole("button", { name: /Hades/ });
+
+    fireEvent.contextMenu(tile, { clientX: 100, clientY: 100 });
+    const menu = await screen.findByRole("menu", { name: "Game actions" });
+    const restoreItem = menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')[2];
+
+    await user.click(restoreItem);
+
+    // The menu may target a game whose history is not loaded, so the revision
+    // is fetched on demand rather than read from another game's state.
+    const dialog = await waitFor(() => openDialog());
+    expect(within(dialog).getByText("Restore snapshot")).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(/Snapshot from/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
   it("shows exactly 5 menu items with correct labels in order", async () => {
     render(<App />);
     await screen.findByRole("button", { name: /Hades/ });
@@ -118,6 +167,19 @@ describe("game tile context menu", () => {
 
     // Press Escape on the menu
     fireEvent.keyDown(menu, { key: "Escape" });
+
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("closes menu when Tab moves focus out of it", async () => {
+    render(<App />);
+    await screen.findByRole("button", { name: /Hades/ });
+
+    const tile = screen.getByRole("button", { name: /Hades/ });
+    fireEvent.contextMenu(tile, { clientX: 100, clientY: 100 });
+
+    const menu = await screen.findByRole("menu", { name: "Game actions" });
+    fireEvent.keyDown(menu, { key: "Tab" });
 
     expect(screen.queryByRole("menu")).toBeNull();
   });
