@@ -21,10 +21,22 @@ use tauri::{Emitter, Manager};
 const GOOGLE_CLIENT_ID_KEY: &str = "google_client_id";
 const OAUTH_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Keyring coordinates for the SteamGridDB API key. It is a secret credential,
+/// so it lives in the OS keyring (exactly like the Google refresh token) and
+/// never in SQLite or application state.
+const STEAMGRIDDB_SERVICE: &str = "savesync";
+const STEAMGRIDDB_ACCOUNT: &str = "steamgriddb-api-key";
+/// Bound on untrusted IPC input so a pathological payload cannot be pushed into
+/// the OS keyring.
+const STEAMGRIDDB_API_KEY_MAX_LEN: usize = 512;
+
 struct Inner {
     engine: Mutex<SaveSyncEngine>,
     watcher: Mutex<Option<SaveWatcher>>,
     credentials: Arc<dyn TokenStore>,
+    /// SteamGridDB key store. Kept separate from the Google store so the two
+    /// credentials cannot overwrite each other's keyring entry.
+    artwork_credentials: Arc<dyn TokenStore>,
     transport: Arc<dyn HttpTransport>,
     client_id: Mutex<Option<String>>,
     oauth: Mutex<OAuthRuntime>,
@@ -56,6 +68,16 @@ struct GoogleStatus {
     connected: bool,
     pending: bool,
     error: Option<String>,
+}
+
+/// Whether a SteamGridDB API key is present. Deliberately carries only a flag:
+/// the key itself is never read into memory or returned across IPC.
+///
+/// `Debug` is derived so tests can call `unwrap_err()` on results; the type
+/// holds no key material, so this cannot expose the credential.
+#[derive(Debug, Serialize)]
+struct ArtworkStatus {
+    configured: bool,
 }
 
 #[derive(Serialize)]
@@ -421,6 +443,65 @@ fn disconnect_google(state: tauri::State<'_, AppState>) -> Result<GoogleStatus, 
     })
 }
 
+/// Report whether an API key is stored, without ever loading the key into a
+/// value that could be logged or serialized. The underlying store error is
+/// discarded: it is not guaranteed key-free.
+fn artwork_status(store: &dyn TokenStore) -> Result<ArtworkStatus, String> {
+    let configured = store
+        .load()
+        .map_err(|_| "Could not read the SteamGridDB API key from the OS keyring.".to_string())?;
+    Ok(ArtworkStatus {
+        configured: configured.is_some(),
+    })
+}
+
+/// Validate, trim, and persist an API key. Fails loudly on empty input so the
+/// UI can correct the user instead of silently storing nothing, and bounds the
+/// input length. Every failure maps to a generic, key-free message.
+fn store_steamgriddb_api_key(
+    store: &dyn TokenStore,
+    api_key: &str,
+) -> Result<ArtworkStatus, String> {
+    let key = api_key.trim();
+    if key.is_empty() {
+        return Err("Enter a SteamGridDB API key.".into());
+    }
+    if key.chars().count() > STEAMGRIDDB_API_KEY_MAX_LEN {
+        return Err(format!(
+            "SteamGridDB API keys may be at most {STEAMGRIDDB_API_KEY_MAX_LEN} characters."
+        ));
+    }
+    store
+        .save(key)
+        .map_err(|_| "Could not save the SteamGridDB API key to the OS keyring.".to_string())?;
+    Ok(ArtworkStatus { configured: true })
+}
+
+fn remove_steamgriddb_api_key(store: &dyn TokenStore) -> Result<ArtworkStatus, String> {
+    store
+        .delete()
+        .map_err(|_| "Could not remove the SteamGridDB API key from the OS keyring.".to_string())?;
+    Ok(ArtworkStatus { configured: false })
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn set_steamgriddb_api_key(
+    state: tauri::State<'_, AppState>,
+    api_key: String,
+) -> Result<ArtworkStatus, String> {
+    store_steamgriddb_api_key(state.inner.artwork_credentials.as_ref(), &api_key)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn steamgriddb_status(state: tauri::State<'_, AppState>) -> Result<ArtworkStatus, String> {
+    artwork_status(state.inner.artwork_credentials.as_ref())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn clear_steamgriddb_api_key(state: tauri::State<'_, AppState>) -> Result<ArtworkStatus, String> {
+    remove_steamgriddb_api_key(state.inner.artwork_credentials.as_ref())
+}
+
 #[tauri::command(rename_all = "snake_case")]
 async fn sync_game(
     state: tauri::State<'_, AppState>,
@@ -530,12 +611,22 @@ pub fn run() {
                 .map(|error| format!("Recovery on startup failed: {error}"));
 
             let client_id = engine.setting(GOOGLE_CLIENT_ID_KEY)?;
-            let credentials: Arc<dyn TokenStore> =
-                if std::env::var("SAVESYNC_MEMORY_TOKENS").is_ok_and(|value| value == "1") {
-                    Arc::new(MemoryTokenStore::default())
-                } else {
-                    Arc::new(KeyringTokenStore::default())
-                };
+            let memory_tokens = std::env::var("SAVESYNC_MEMORY_TOKENS").is_ok_and(|value| value == "1");
+            let credentials: Arc<dyn TokenStore> = if memory_tokens {
+                Arc::new(MemoryTokenStore::default())
+            } else {
+                Arc::new(KeyringTokenStore::default())
+            };
+            // The SteamGridDB API key is a secret credential too, so it follows
+            // the same keyring-or-memory policy as the Google refresh token.
+            let artwork_credentials: Arc<dyn TokenStore> = if memory_tokens {
+                Arc::new(MemoryTokenStore::default())
+            } else {
+                Arc::new(KeyringTokenStore::new(
+                    STEAMGRIDDB_SERVICE,
+                    STEAMGRIDDB_ACCOUNT,
+                ))
+            };
             let connected = credentials.load().unwrap_or(None).is_some();
             let transport: Arc<dyn HttpTransport> = Arc::new(ReqwestTransport::default());
 
@@ -568,6 +659,7 @@ pub fn run() {
                     engine: Mutex::new(engine),
                     watcher: Mutex::new(watcher),
                     credentials,
+                    artwork_credentials,
                     transport,
                     client_id: Mutex::new(client_id),
                     oauth: Mutex::new(OAuthRuntime {
@@ -598,6 +690,9 @@ pub fn run() {
             begin_google_oauth,
             open_auth_url,
             disconnect_google,
+            set_steamgriddb_api_key,
+            steamgriddb_status,
+            clear_steamgriddb_api_key,
             sync_game,
             watch_game,
             unwatch_game,
@@ -628,5 +723,82 @@ mod tests {
         assert!(store.save("").is_err());
         store.save("refresh").unwrap();
         assert_eq!(store.load().unwrap().as_deref(), Some("refresh"));
+    }
+
+    /// A store whose every operation fails with a message that embeds a
+    /// secret-shaped payload. Proves the command layer never forwards the
+    /// underlying keyring error to the UI.
+    struct FailingStore;
+
+    impl TokenStore for FailingStore {
+        fn load(&self) -> savesync_core::Result<Option<String>> {
+            Err(savesync_core::Error::Auth("keyring payload: leaked".into()))
+        }
+        fn save(&self, _token: &str) -> savesync_core::Result<()> {
+            Err(savesync_core::Error::Auth("keyring payload: leaked".into()))
+        }
+        fn delete(&self) -> savesync_core::Result<()> {
+            Err(savesync_core::Error::Auth("keyring payload: leaked".into()))
+        }
+    }
+
+    const STEAMGRIDDB_SENTINEL_KEY: &str = "sgsdb-sentinel-key-0123456789";
+
+    #[test]
+    fn steamgriddb_key_round_trips_without_being_echoed() {
+        let store: Arc<dyn TokenStore> = Arc::new(MemoryTokenStore::default());
+
+        // Starts unconfigured.
+        assert!(!artwork_status(store.as_ref()).unwrap().configured);
+
+        // Empty / whitespace-only input is refused, and the error is key-free.
+        let empty_error = store_steamgriddb_api_key(store.as_ref(), "   ").unwrap_err();
+        assert!(!empty_error.contains(STEAMGRIDDB_SENTINEL_KEY));
+        assert!(!artwork_status(store.as_ref()).unwrap().configured);
+
+        // Surrounding whitespace is trimmed before the key reaches the keyring.
+        let padded = format!("  {STEAMGRIDDB_SENTINEL_KEY}  ");
+        let stored = store_steamgriddb_api_key(store.as_ref(), &padded).unwrap();
+        assert!(stored.configured);
+        assert!(artwork_status(store.as_ref()).unwrap().configured);
+        assert_eq!(
+            store.load().unwrap().as_deref(),
+            Some(STEAMGRIDDB_SENTINEL_KEY)
+        );
+
+        // Removal returns to the unconfigured state.
+        let cleared = remove_steamgriddb_api_key(store.as_ref()).unwrap();
+        assert!(!cleared.configured);
+        assert!(!artwork_status(store.as_ref()).unwrap().configured);
+    }
+
+    #[test]
+    fn steamgriddb_key_rejects_oversized_input() {
+        let store: Arc<dyn TokenStore> = Arc::new(MemoryTokenStore::default());
+        let too_long = "k".repeat(STEAMGRIDDB_API_KEY_MAX_LEN + 1);
+
+        let error = store_steamgriddb_api_key(store.as_ref(), &too_long).unwrap_err();
+
+        // The length error must not embed any part of the rejected value.
+        assert!(!error.contains("kkkk"));
+        assert_eq!(store.load().unwrap(), None);
+    }
+
+    #[test]
+    fn steamgriddb_errors_never_forward_the_keyring_payload() {
+        let store = FailingStore;
+
+        assert_eq!(
+            store_steamgriddb_api_key(&store, STEAMGRIDDB_SENTINEL_KEY).unwrap_err(),
+            "Could not save the SteamGridDB API key to the OS keyring."
+        );
+        assert_eq!(
+            artwork_status(&store).unwrap_err(),
+            "Could not read the SteamGridDB API key from the OS keyring."
+        );
+        assert_eq!(
+            remove_steamgriddb_api_key(&store).unwrap_err(),
+            "Could not remove the SteamGridDB API key from the OS keyring."
+        );
     }
 }

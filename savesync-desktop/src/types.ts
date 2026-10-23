@@ -69,6 +69,14 @@ export interface GoogleStatus {
   error: string | null;
 }
 
+/**
+ * Whether a SteamGridDB API key is stored in the OS keyring. The key itself is
+ * never sent to the frontend: this shape deliberately carries only a flag.
+ */
+export interface ArtworkStatus {
+  configured: boolean;
+}
+
 export interface AppStatus {
   device: string;
   platform: string;
