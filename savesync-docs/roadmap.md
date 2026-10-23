@@ -79,3 +79,23 @@ SaveSync development is divided into four sequential phases, prioritizing data s
   - System tray, auto-start, and keyboard shortcuts.
 - [ ] **End-to-End Safety Audit**:
   - Fault injection testing (corrupted archives, mid-transfer drops, path traversal attack payloads).
+
+---
+
+## Backlog: Deferred Enhancements
+
+Not scheduled phases. Each item is opt-in, additive, and must not weaken local backup, restore, or offline operation.
+
+- [ ] **Game launching from the library**:
+  - Launch a game from its detail view, then snapshot automatically on exit; pull the newest revision before launch so the session starts from the current save.
+  - Steam titles via `steam://run/<appid>`; custom folders via a user-supplied executable path; emulator presets for Cemu (`-f -g`), Xenia, Xemu (`-dvd_path`), Azahar, Eden, PCSX2, RPCS3, and Ryujinx.
+  - Scope is quick launch plus save safety, not library-management parity with Playnite or iiSu.
+  - Xemu titles need special handling: their save state is a qcow2 disk image rather than a save directory.
+- [ ] **SteamGridDB cover art**:
+  - Optional API key in settings; fetch real box art for enrolled games and cache it locally so covers keep rendering offline.
+  - Right-click a cover to search and pick a different image.
+  - Generated SVG covers remain the offline fallback.
+  - Must never block local backup or restore, and the key must never be logged or written to diagnostics.
+- [ ] **Controller-aware prompts**:
+  - When a gamepad is connected, show the matching button glyphs (A/B/Y) in dialogs and menus, while keeping full keyboard and mouse parity.
+  - Detection only; no gameplay input handling.

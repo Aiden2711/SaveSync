@@ -2,6 +2,40 @@
 
 This document defines project-specific agent rules, architectural boundaries, commands, and verification steps. All agents must follow these rules when planning, implementing, reviewing, or testing changes.
 
+## Repository Map
+
+| Path | What lives there |
+| --- | --- |
+| `savesync-core/` | Rust engine. Must stay free of Tauri/UI dependencies so it remains testable on its own. |
+| `savesync-core/src/sql/` | Forward-only migrations (`001_initial.sql`, `002_add_cover_path.sql`, `003_discovery_cache.sql`), applied in order through `PRAGMA user_version`. |
+| `savesync-core/tests/` | Integration suites: `phase1_safety.rs` (enrollment gating, snapshot, restore, journal), `phase2_sync.rs` (revision DAG and conflict flow), `google_drive_sync.rs` (provider against a mock transport). |
+| `savesync-desktop/` | Tauri 2 shell and React 19 UI. `src-tauri/src/lib.rs` holds every `#[tauri::command]`; `src/api.ts` is the typed wrapper the UI calls. |
+| `savesync-desktop/mockups/` | Static HTML design previews. Not shipped, not part of the build. |
+| `savesync-docs/` | Architecture, roadmap, sync protocol, threat model, testing strategy, ADRs, plus `plans/` and `specs/` for work in flight. |
+| `.opencode/` | Project agents (`agents/`) and skills (`skills/`) referenced by this document. |
+
+### Core Module Ownership
+
+- `engine.rs` — `SaveSyncEngine`, the single façade the Tauri command layer drives. It owns the database, the blob store, and the on-disk safety paths.
+- `store.rs` / `db.rs` — Repository functions over the SQLite schema, and connection/migration handling (WAL, `synchronous=FULL`, foreign keys). `store` never touches user save files.
+- `manifest.rs` / `hash.rs` / `blob.rs` — Canonical manifests, SHA-256 helpers, and content-addressed `tar.zst` snapshot blobs.
+- `restore.rs` — Two-phase journaled restores (`prepared → applied | rolled_back | rollback_failed`) with pre-restore safety backup.
+- `sync.rs` / `provider.rs` / `google_drive.rs` / `http.rs` / `oauth.rs` / `oauth_loopback.rs` / `credentials.rs` — Sync engine, provider abstraction, Drive REST v3, retrying transport, PKCE flow, and OS keyring token storage.
+- `discovery.rs` / `paths.rs` — Save discovery (Ludusavi/Lutris/adapter sources) and path-safety validation for untrusted manifests and archives.
+- `watcher.rs` — Passive change detection only. It must never snapshot, read save bytes, or write.
+- `models.rs` / `error.rs` / `lib.rs` — Serde domain types, explicit error taxonomy, and public re-exports.
+
+### Desktop Conventions
+
+- Commands return `Result<T, String>`. Blocking work runs inside `tauri::async_runtime::spawn_blocking` (see `sync_game`) so the webview never stalls.
+- UI state flows `src/App.tsx` → `src/api.ts` → `src/tauri.ts`. Keep `src/types.ts` aligned with the Rust `serde` shapes.
+- Destructive dialogs follow the focus-trap contract exercised by `src/App.dialogs.test.tsx`.
+- Vitest runs through `vitest.config.ts` (jsdom, `src/test/setup.ts`) against `src/test/tauri-stub.ts`. Tests must never require a live Tauri runtime.
+
+### Current Phase
+
+Phase 3 (platform adapters and production hardening) is in progress. The active work item is discovery review / multi-location support, specified in `savesync-docs/specs/2026-10-21-discovery-review-multi-location-design.md` and planned in `savesync-docs/plans/2026-10-21-discovery-review-multi-location.md`.
+
 ## Permanent Project Rules
 
 1. **SAFETY AND DATA INTEGRITY FIRST:** No operation may delete or modify the only known-good copy of a save unless the operation is guaranteed to succeed or a recoverable alternative exists. Destructive actions require preview, step-by-step confirmation, or explicit user selection.
@@ -269,6 +303,8 @@ npm run tauri dev
 
 A Tauri debug binary loads `build.devUrl`. Running it without Vite may show `Connection refused` on `127.0.0.1`. Use `dev.sh` or a release build as appropriate.
 
+Both `dev.sh` and `verify-release.sh` assume `savesync-desktop/node_modules` exists. Run `npm install` once after cloning or when the lockfile changes.
+
 ### Build and Package
 
 ```bash
@@ -331,9 +367,12 @@ Do not add permanent benchmark infrastructure or dependencies solely to support 
 2. **Desktop shell**
 
    ```bash
+   cd savesync-desktop && npm test
    cd savesync-desktop && npm run build
    cd savesync-desktop/src-tauri && cargo clippy --all-targets -- -D warnings
    ```
+
+   `npm test` covers the destructive restore/exact-restore dialog contract (Cancel owns initial focus; Escape and backdrop never call the API; confirm fires exactly once). Treat a failure there as a data-safety regression, not a UI nit.
 
 3. **Schema alignment**
 
@@ -385,6 +424,7 @@ Do not add permanent benchmark infrastructure or dependencies solely to support 
 - **Desktop:**
 
   ```bash
+  cd savesync-desktop && npm test
   cd savesync-desktop && npm run build
   cd savesync-desktop/src-tauri && cargo clippy --all-targets -- -D warnings && cargo test
   ```
@@ -394,6 +434,8 @@ Do not add permanent benchmark infrastructure or dependencies solely to support 
   ```bash
   ./savesync-docs/scripts/maint/verify-release.sh
   ```
+
+  This script covers `cargo fmt --check`, core clippy, core tests, the desktop frontend build, desktop clippy, and desktop `cargo test`. It does **not** run the Vitest suite; run `cd savesync-desktop && npm test` separately.
 
 - No unresolved critical or high-severity correctness, safety, security, or performance findings without an explicitly approved exception.
 - No unqualified "future needs" comments; all GO decisions must be actionable.
