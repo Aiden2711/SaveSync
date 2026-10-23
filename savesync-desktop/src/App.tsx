@@ -3,6 +3,7 @@ import type { FormEvent, ReactNode } from "react";
 import { api } from "./api";
 import CoverArt from "./components/CoverArt";
 import { ADAPTER_LABELS, adapterLabel } from "./lib/cover";
+import { clampMenuPosition, MENU_SIZE, TOPBAR_FALLBACK_HEIGHT } from "./lib/menu";
 import { isDesktop } from "./tauri";
 import type {
   AppStatus,
@@ -241,7 +242,9 @@ export default function App() {
   const [theme, setTheme] = useState<Theme>(initialTheme());
   const [dialogState, setDialogState] = useState<DialogState>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const menuTriggerRef = useRef<HTMLElement | null>(null);
   const [menuFocusIndex, setMenuFocusIndex] = useState<number>(0);
+  const [menuGameId, setMenuGameId] = useState<string | null>(null);
   const [view, setView] = useState<View>("library");
   const [enrollOpen, setEnrollOpen] = useState(false);
   /**
@@ -267,22 +270,34 @@ export default function App() {
   const handleMenuKeyDown = useCallback((event: React.KeyboardEvent) => {
     if (!menuPosition) return;
 
-    const items = menuRef.current?.querySelectorAll("[role='menuitem']") ?? [];
+    const items = menuRef.current?.querySelectorAll<HTMLButtonElement>("[role='menuitem']") ?? [];
     const count = items.length;
 
     if (event.key === "Escape") {
       setMenuPosition(null);
+      setMenuGameId(null);
+      menuTriggerRef.current?.focus();
+      menuTriggerRef.current = null;
       return;
     }
 
+    const getNextEnabled = (start: number, dir: 1 | -1): number => {
+      let i = start;
+      for (let step = 0; step < count; step++) {
+        i = (i + dir + count) % count;
+        if (!items[i].disabled) return i;
+      }
+      return start; // all disabled
+    };
+
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setMenuFocusIndex((current) => (current + 1) % count);
+      setMenuFocusIndex((current) => getNextEnabled(current, 1));
     }
 
     if (event.key === "ArrowUp") {
       event.preventDefault();
-      setMenuFocusIndex((current) => (current - 1 + count) % count);
+      setMenuFocusIndex((current) => getNextEnabled(current, -1));
     }
 
     if (event.key === "Enter" || event.key === " ") {
@@ -297,6 +312,19 @@ export default function App() {
       (items[menuFocusIndex] as HTMLElement)?.focus();
     }
   }, [menuPosition, menuFocusIndex]);
+
+  // Click-outside dismissal
+  useEffect(() => {
+    if (!menuPosition) return;
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuPosition(null);
+        setMenuGameId(null);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [menuPosition]);
 
   const selectedGame = useMemo(
     () => games.find((game) => game.id === selectedId) ?? null,
@@ -465,6 +493,32 @@ export default function App() {
     }
   }
 
+  async function takeSnapshotFromMenu(gameId: string) {
+    const result = await run("Creating snapshot", () =>
+      api.snapshot(gameId, ""),
+    );
+    if (result) {
+      setNotice(
+        `Snapshot saved: ${result.file_count} file(s), ${formatBytes(result.total_bytes)}.`,
+      );
+      await loadGames();
+      await loadGameDetails(gameId);
+    }
+  }
+
+  async function syncGame(gameId: string) {
+    const report: SyncReport | null = await run("Syncing with Google Drive", () =>
+      api.sync(gameId),
+    );
+    if (report) {
+      setNotice(
+        `Sync complete: ${report.pulled_revisions} pulled, ${report.pushed_revisions} pushed, ${report.conflict_ids.length} conflict(s).`,
+      );
+      await loadGames();
+      await loadGameDetails(gameId);
+    }
+  }
+
   async function requestRestore(revision: Revision, exactMirror: boolean) {
     setDialogState({ kind: "restore", revision, exactMirror });
   }
@@ -564,8 +618,29 @@ export default function App() {
   const openMenu = useCallback(
     (event: React.MouseEvent, gameId: string) => {
       event.preventDefault();
-      setMenuPosition({ x: event.clientX, y: event.clientY });
       setSelectedId(gameId);
+      setMenuGameId(gameId);
+      const topbarEl = document.querySelector<HTMLElement>(".topbar");
+      const topInset = topbarEl ? topbarEl.getBoundingClientRect().bottom + 8 : TOPBAR_FALLBACK_HEIGHT;
+      const pos = clampMenuPosition(
+        { x: event.clientX, y: event.clientY },
+        MENU_SIZE,
+        { width: window.innerWidth, height: window.innerHeight },
+        topInset,
+      );
+      setMenuPosition(pos);
+      // Store the triggering element so Escape can return focus to it
+      menuTriggerRef.current = event.currentTarget as HTMLElement;
+      // Focus first enabled menu item after render
+      requestAnimationFrame(() => {
+        const items = menuRef.current?.querySelectorAll<HTMLButtonElement>("[role='menuitem']");
+        if (!items) return;
+        const first = Array.from(items).findIndex((el) => !el.disabled);
+        if (first >= 0) {
+          items[first].focus();
+          setMenuFocusIndex(first);
+        }
+      });
     },
     [],
   );
@@ -1193,54 +1268,113 @@ export default function App() {
         {view === "settings" && renderSettingsView()}
       </main>
 
-      {menuPosition && selectedId ? (
-        <div
-          ref={menuRef}
-          role="menu"
-          aria-label="Game actions"
-          onKeyDown={handleMenuKeyDown}
-          style={{
-            position: "absolute",
-            left: menuPosition.x,
-            top: menuPosition.y,
-            minWidth: "180px",
-          }}
-          className="game-menu"
-          onClick={(event) => event.stopPropagation()}
-        >
-          <button
-            type="button"
-            role="menuitem"
-            tabIndex={-1}
-            className="menu-item"
-            disabled={!!busy || !drive.connected}
-            title={
-              drive.connected
-                ? busy ? "Syncing…" : "Sync with Google Drive"
-                : "Connect Google Drive first"
-            }
-            onClick={(event) => {
-              event.stopPropagation();
-              setMenuPosition(null);
-              void syncSelected();
-            }}
-          >
-            {busy === "Syncing with Google Drive" ? "Syncing…" : "Sync with Google Drive"}
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            tabIndex={-1}
-            className="menu-item menu-item-danger"
-            onClick={(event) => {
-              event.stopPropagation();
-              setMenuPosition(null);
-              openUnlinkDialog();
-            }}
-          >
-            Remove from library
-          </button>
-        </div>
+      {menuPosition && menuGameId ? (
+        (() => {
+          const game = games.find((g) => g.id === menuGameId);
+          const hasHead = game?.active_head_revision_id !== null && game?.active_head_revision_id !== undefined;
+          return (
+            <div
+              ref={menuRef}
+              role="menu"
+              aria-label="Game actions"
+              onKeyDown={handleMenuKeyDown}
+              style={{
+                position: "fixed",
+                left: menuPosition.x,
+                top: menuPosition.y,
+                minWidth: "232px",
+              }}
+              className="game-menu"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                className="menu-item"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setMenuPosition(null);
+                  setMenuGameId(null);
+                }}
+              >
+                Open details
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                className="menu-item"
+                disabled={busy === "Creating snapshot"}
+                title={busy === "Creating snapshot" ? "Creating snapshot…" : "Create a new snapshot of the current save state"}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setMenuPosition(null);
+                  setMenuGameId(null);
+                  if (menuGameId) void takeSnapshotFromMenu(menuGameId);
+                }}
+              >
+                {busy === "Creating snapshot" ? "Creating snapshot…" : "Backup now"}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                className="menu-item"
+                disabled={!hasHead}
+                title={hasHead ? "Restore the latest snapshot" : "No snapshot exists yet"}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setMenuPosition(null);
+                  setMenuGameId(null);
+                  if (game?.active_head_revision_id) {
+                    const rev = revisions.find((r) => r.id === game.active_head_revision_id);
+                    if (rev) setDialogState({ kind: "restore", revision: rev, exactMirror: false });
+                  }
+                }}
+              >
+                Restore latest…
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                className="menu-item"
+                disabled={!!busy || !drive.connected}
+                title={
+                  drive.connected
+                    ? busy
+                      ? "Syncing…"
+                      : "Sync revisions with Google Drive"
+                    : "Connect Google Drive first"
+                }
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setMenuPosition(null);
+                  setMenuGameId(null);
+                  if (menuGameId) void syncGame(menuGameId);
+                }}
+              >
+                {busy === "Syncing with Google Drive" ? "Syncing…" : "Sync now"}
+              </button>
+              <hr className="menu-separator" />
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                className="menu-item menu-item-danger"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setMenuPosition(null);
+                  setMenuGameId(null);
+                  openUnlinkDialog();
+                }}
+              >
+                Remove from library…
+              </button>
+            </div>
+          );
+        })()
       ) : null}
 
       {enrollOpen ? (

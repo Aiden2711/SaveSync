@@ -1086,8 +1086,8 @@ label {
 }
 
 .game-menu {
-  position: absolute;
-  min-width: 180px;
+  position: fixed;
+  min-width: 232px;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius-2);
@@ -1136,6 +1136,12 @@ label {
 .menu-item.menu-item-danger:hover:not(:disabled) {
   background: var(--danger);
   color: var(--danger-ink);
+}
+
+.menu-separator {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: var(--space-3xs) 0;
 }
 
 dialog.modal {
