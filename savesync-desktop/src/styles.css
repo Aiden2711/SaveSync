@@ -7,6 +7,12 @@
   --ink-3: #a59d93;
   --accent: #e8a33d;
   --accent-ink: #1f1c19;
+  /* Primary-button hover fill and focus outline are tokens, not filters: a
+     brightness() filter scales the fill and its ink together and cannot be
+     contrast-audited. Ratios are WCAG 2.1 relative-luminance ratios on the
+     resolved values (dark theme values here). */
+  --accent-hover: #d19337; /* --accent-ink on it: 6.41:1 */
+  --focus-ring: #e8a33d; /* on --base 7.50:1, --surface 6.61:1, --surface-2 5.80:1 */
   --font-display: "Instrument Sans", system-ui, sans-serif;
   --font-text: "IBM Plex Mono", ui-monospace, monospace;
   --radius: 8px;
@@ -76,6 +82,8 @@
   --ink-3: #a59d93;
   --accent: #e8a33d;
   --accent-ink: #1f1c19;
+  --accent-hover: #d19337; /* --accent-ink on it: 6.41:1 */
+  --focus-ring: #e8a33d; /* on --base 7.50:1, --surface 6.61:1, --surface-2 5.80:1 */
   --warn: #e8a33d;
   /* Readable warn text on dark surfaces (6.6:1 on --surface); #1f1c19 is the
      accent-ink and would be invisible here. */
@@ -103,6 +111,13 @@
   --ink-3: #8a8072;
   --accent: #c47c1a;
   --accent-ink: #1f1c19; /* 5.04:1 on the light accent (was #ffffff at 3.36:1) */
+  /* Hover fill: the accent darkened ~3%. --accent-ink on it is 4.76:1 (the old
+     filter: brightness(0.9) scaled the ink too and measured 4.31:1), and it
+     also lifts the fill's non-text boundary on every light surface
+     (3.14:1 on --base, 3.34:1 on --surface, 2.82:1 on --surface-2). */
+  --accent-hover: #be7819;
+  /* Focus outline: 4.23:1 on --base, 4.50:1 on --surface, 3.81:1 on --surface-2. */
+  --focus-ring: #a2640d;
   --warn: #c47c1a;
   --warn-ink: #8a5207;
   --danger: #a7282b;
@@ -178,7 +193,7 @@ select {
 }
 
 :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -215,9 +230,8 @@ button.primary {
 }
 
 button.primary:hover:not(:disabled) {
-  background: var(--accent);
-  border-color: var(--accent);
-  filter: brightness(0.9);
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 button.ghost {
@@ -278,9 +292,9 @@ input::placeholder {
 
 input:focus-visible,
 select:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
-  border-color: var(--accent);
+  border-color: var(--focus-ring);
 }
 
 label {
@@ -1106,7 +1120,7 @@ label {
 }
 
 .menu-item:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }
 
@@ -1185,7 +1199,7 @@ dialog.modal .dialog-card {
 }
 
 .theme-toggle:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
