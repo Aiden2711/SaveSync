@@ -28,3 +28,6 @@ savesync-desktop/dist/
 
 # Local machine configuration (may contain credentials)
 opencode.json
+
+# Agent session artifacts
+.superpowers/
