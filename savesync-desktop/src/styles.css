@@ -27,6 +27,11 @@
      On the dark base it is the amber itself; dark-on-dark ink would be invisible. */
   --warn-ink: #e8a33d;
   --danger: #e06b6b;
+  /* Derived text/ink tokens. Light-theme counterparts live in [data-theme="light"]. */
+  --accent-text: var(--accent); /* accent as TEXT: 7.50:1 on the dark base */
+  --danger-text: #ef8080; /* danger as TEXT: 5.48:1 on --surface, 6.21:1 on --base */
+  --danger-ink: #1f1c19; /* ink ON a --danger fill: 5.24:1 */
+  --scrim: rgba(12, 10, 9, 0.55);
   --text-2xs: 11px;
   --text-xs: 13px;
   --text-sm: 14px;
@@ -73,6 +78,10 @@
      accent-ink and would be invisible here. */
   --warn-ink: #e8a33d;
   --danger: #e06b6b;
+  --accent-text: var(--accent);
+  --danger-text: #ef8080;
+  --danger-ink: #1f1c19;
+  --scrim: rgba(12, 10, 9, 0.55);
   --shadow-near: 0 1px 2px rgba(0, 0, 0, 0.45);
   --shadow-far: 0 8px 24px rgba(0, 0, 0, 0.35);
   --shadow-1: var(--shadow-near);
@@ -90,10 +99,14 @@
   --ink-2: #5c554b;
   --ink-3: #8a8072;
   --accent: #c47c1a;
-  --accent-ink: #ffffff;
+  --accent-ink: #1f1c19; /* 5.04:1 on the light accent (was #ffffff at 3.36:1) */
   --warn: #c47c1a;
   --warn-ink: #8a5207;
   --danger: #a7282b;
+  --accent-text: #96590c; /* accent as TEXT: 4.95:1 on --base, 5.27:1 on --surface */
+  --danger-text: #a7282b; /* danger as TEXT: 6.20:1 on --base, 6.59:1 on --surface */
+  --danger-ink: #ffffff; /* ink ON a --danger fill: 7.04:1 */
+  --scrim: rgba(36, 32, 28, 0.28);
   --shadow-near: 0 1px 2px rgba(36, 32, 28, 0.15);
   --shadow-far: 0 8px 24px rgba(36, 32, 28, 0.12);
   --shadow-1: var(--shadow-near);
@@ -195,7 +208,7 @@ button:disabled {
 button.primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: var(--surface);
+  color: var(--accent-ink);
 }
 
 button.primary:hover:not(:disabled) {
@@ -213,13 +226,13 @@ button.ghost:hover:not(:disabled) {
 }
 
 button.danger {
-  color: var(--danger);
+  color: var(--danger-text);
   border-color: var(--danger);
 }
 
 button.danger:hover:not(:disabled) {
   background: var(--danger);
-  color: var(--surface);
+  color: var(--danger-ink);
   border-color: var(--danger);
 }
 
@@ -306,7 +319,7 @@ label {
   height: 40px;
   border-radius: var(--radius-2);
   background: var(--chrome);
-  color: var(--surface);
+  color: var(--accent-ink);
   font-family: var(--font-display);
   font-size: var(--text-sm);
   font-weight: 700;
@@ -397,7 +410,7 @@ label {
 
 .banner.error {
   border-color: var(--danger);
-  color: var(--danger);
+  color: var(--danger-text);
 }
 
 .banner.warning {
@@ -409,7 +422,7 @@ label {
   display: flex;
   align-items: center;
   gap: var(--space-2xs);
-  color: var(--accent);
+  color: var(--accent-text);
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
   letter-spacing: 0.02em;
@@ -423,7 +436,7 @@ label {
 }
 
 .eyebrow {
-  color: var(--accent);
+  color: var(--accent-text);
   font-size: var(--text-2xs);
   font-weight: 650;
   letter-spacing: 0.14em;
@@ -769,7 +782,7 @@ label {
 }
 
 .error {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 
 .game-menu {
@@ -817,12 +830,12 @@ label {
 }
 
 .menu-item.menu-item-danger {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 
 .menu-item.menu-item-danger:hover:not(:disabled) {
   background: var(--danger);
-  color: var(--surface);
+  color: var(--danger-ink);
 }
 
 dialog.modal {
@@ -834,7 +847,7 @@ dialog.modal {
 }
 
 dialog.modal::backdrop {
-  background: rgba(20, 22, 28, 0.45);
+  background: var(--scrim);
 }
 
 dialog.modal .dialog-card {
@@ -854,23 +867,14 @@ dialog.modal .dialog-card {
 .dialog-card button.danger {
   background: var(--danger);
   border-color: var(--danger);
-  color: #fff;
+  color: var(--danger-ink);
 }
 
 .dialog-card button.danger:hover:not(:disabled) {
   background: var(--danger);
   border-color: var(--danger);
-  color: #fff;
+  color: var(--danger-ink);
   filter: brightness(0.9);
-}
-
-/* Dark theme: the filled danger button needs dark ink to stay above AA (4.5:1). */
-[data-theme="dark"] .dialog-card button.danger {
-  color: #14161c;
-}
-
-[data-theme="dark"] .dialog-card button.danger:hover:not(:disabled) {
-  color: #14161c;
 }
 
 .theme-toggle {
