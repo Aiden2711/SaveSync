@@ -7,6 +7,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::artwork::SteamGridDbClient;
 use crate::blob::BlobStore;
 use crate::db::Db;
 use crate::error::{Error, Result};
@@ -24,6 +25,10 @@ use crate::sync::{self, SyncDirection, SyncReport};
 /// Settings key holding the stable device UUID.
 const DEVICE_ID_KEY: &str = "device_id";
 
+/// Image formats a cached cover may use, in the order they are tried when
+/// pruning a stale file left by a previous fetch.
+const COVER_EXTENSIONS: [&str; 3] = ["png", "jpg", "webp"];
+
 /// The SaveSync core engine.
 pub struct SaveSyncEngine {
     db: Db,
@@ -35,10 +40,15 @@ pub struct SaveSyncEngine {
 impl SaveSyncEngine {
     /// Open (or initialize) a SaveSync data directory.
     ///
-    /// Layout: `savesync.db`, `blobs/`, `staging/`, `rollback/`.
+    /// Layout: `savesync.db`, `blobs/`, `staging/`, `rollback/`, `covers/`.
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
         let paths = DataPaths::new(root.as_ref().to_path_buf());
-        for directory in [&paths.root, &paths.staging(), &paths.rollback()] {
+        for directory in [
+            &paths.root,
+            &paths.staging(),
+            &paths.rollback(),
+            &paths.covers(),
+        ] {
             fs::create_dir_all(directory).map_err(|e| Error::io(directory, e))?;
         }
         let blobs = BlobStore::open(paths.blobs())?;
@@ -138,6 +148,120 @@ impl SaveSyncEngine {
             store::set_cover_path(tx, game_id, cover_path)?;
             store::require_game(tx, game_id)
         })
+    }
+
+    /// Directory where cached cover images live.
+    pub fn covers_dir(&self) -> PathBuf {
+        self.paths.covers()
+    }
+
+    /// Resolve a game's cached cover to an absolute path on disk.
+    ///
+    /// Returns `Ok(None)` when the game has no cover recorded. Fails if the
+    /// recorded path is unsafe or does not point at a regular file.
+    pub fn cover_file(&self, game_id: &str) -> Result<Option<PathBuf>> {
+        let game = store::require_game(self.db.connection(), game_id)?;
+        let Some(recorded) = game.cover_path else {
+            return Ok(None);
+        };
+
+        // The database value is untrusted: it may have been written by an
+        // older build or edited directly. It may only ever name a file below
+        // the cover cache, and only through a plain relative path.
+        if !recorded.starts_with("covers/") {
+            return Err(Error::InvalidState(
+                "cover path is outside the cover cache".into(),
+            ));
+        }
+        let resolved = crate::paths::safe_join(&self.paths.root, &recorded)?;
+        if !resolved.starts_with(self.paths.covers()) {
+            return Err(Error::InvalidState(
+                "cover path is outside the cover cache".into(),
+            ));
+        }
+
+        match fs::symlink_metadata(&resolved) {
+            // `symlink_metadata` does not follow links, so a symlink or a
+            // directory is rejected instead of being served as an image.
+            Ok(metadata) if metadata.file_type().is_file() => Ok(Some(resolved)),
+            Ok(_) => Err(Error::InvalidState(format!(
+                "cover path is not a regular file: {}",
+                resolved.display()
+            ))),
+            // A missing cache file is not an error: the UI falls back to
+            // generated artwork.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(Error::io(&resolved, error)),
+        }
+    }
+
+    /// Fetch, validate and cache cover art for a game, then record it.
+    ///
+    /// On any failure the previously recorded cover is left untouched: the
+    /// database value only changes after a complete, verified image is on
+    /// disk.
+    pub fn fetch_cover_art(
+        &mut self,
+        client: &SteamGridDbClient,
+        api_key: &str,
+        game_id: &str,
+    ) -> Result<Game> {
+        let game = store::require_game(self.db.connection(), game_id)?;
+
+        let sgdb_id = client
+            .search_game(api_key, &game.title)?
+            .ok_or_else(|| Error::NotFound("no SteamGridDB match for this title".into()))?;
+        let candidate = client
+            .pick_grid(api_key, sgdb_id)?
+            .ok_or_else(|| Error::NotFound("no cover art available for this game".into()))?;
+
+        // The game id becomes a file name, so it is validated before it is
+        // ever joined onto a path.
+        let stem = cover_stem(game_id)?;
+        let extension = cover_extension(&candidate.mime);
+        let dest = self.paths.covers().join(format!("{stem}.{extension}"));
+
+        // Validates the CDN URL host and scheme, caps the size, sniffs the
+        // magic bytes, and writes through `.part` + rename. Nothing here
+        // re-implements any of that.
+        client.download_grid(api_key, &candidate, &dest)?;
+
+        let relative = format!("covers/{stem}.{extension}");
+        let updated = self.db.transaction(|tx| {
+            store::set_cover_path(tx, game_id, Some(&relative))?;
+            store::require_game(tx, game_id)
+        })?;
+
+        // A re-fetch may have produced a different format; drop the stale
+        // variant so the cache holds exactly one file per game. A failed
+        // deletion is harmless: an orphaned cache file is never read and is
+        // never inside a save location.
+        for other in COVER_EXTENSIONS {
+            if other != extension {
+                let _ = fs::remove_file(self.paths.covers().join(format!("{stem}.{other}")));
+            }
+        }
+
+        Ok(updated)
+    }
+
+    /// Clear a game's cover: clear the recorded path, then best-effort delete
+    /// the cached file.
+    ///
+    /// The database is authoritative, so the record is cleared first. An
+    /// orphaned cache file is harmless and never inside a save directory.
+    pub fn clear_cover_art(&mut self, game_id: &str) -> Result<Game> {
+        // Resolve before clearing; a path that no longer resolves means there
+        // is nothing to delete.
+        let cached = self.cover_file(game_id).ok().flatten();
+        let updated = self.db.transaction(|tx| {
+            store::set_cover_path(tx, game_id, None)?;
+            store::require_game(tx, game_id)
+        })?;
+        if let Some(path) = cached {
+            let _ = fs::remove_file(path);
+        }
+        Ok(updated)
     }
 
     /// Attach a save location to a game.
@@ -458,6 +582,35 @@ impl SaveSyncEngine {
                 locations.len()
             ))),
         }
+    }
+}
+
+/// Validate that a game id can safely be used as a file name.
+///
+/// Only ASCII alphanumerics and `-` are accepted: no separators, no dots, and
+/// no drive prefixes, so no database value can become a traversal component.
+fn cover_stem(game_id: &str) -> Result<&str> {
+    let safe = !game_id.is_empty()
+        && game_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-');
+    if !safe {
+        return Err(Error::InvalidState(
+            "unsafe game id for a cover file name".into(),
+        ));
+    }
+    Ok(game_id)
+}
+
+/// Map an upstream MIME type to a cache file extension.
+///
+/// PNG is the default for unknown types; `download_grid` independently sniffs
+/// the real bytes, so a wrong MIME cannot smuggle a non-image into the cache.
+fn cover_extension(mime: &str) -> &'static str {
+    match mime {
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        _ => "png",
     }
 }
 

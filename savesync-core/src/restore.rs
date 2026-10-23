@@ -75,6 +75,11 @@ impl DataPaths {
         self.root.join("rollback")
     }
 
+    /// Cached cover art. Never inside a save location.
+    pub fn covers(&self) -> PathBuf {
+        self.root.join("covers")
+    }
+
     pub fn staging_for(&self, restore_id: &str) -> PathBuf {
         self.staging().join(restore_id)
     }
