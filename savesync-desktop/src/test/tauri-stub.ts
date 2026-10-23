@@ -14,6 +14,7 @@
  */
 import type {
   AppStatus,
+  ArtworkStatus,
   Conflict,
   Game,
   GoogleStatus,
@@ -131,6 +132,24 @@ const conflicts: Conflict[] = [
 
 const dirtyGameIds: string[] = [SECOND_GAME_ID];
 
+/**
+ * SteamGridDB key state for the stub. It tracks only whether a key is stored —
+ * exactly like the Rust command surface, which never returns the key itself.
+ */
+let artworkStatus: ArtworkStatus = { configured: false };
+/** When set, `set_steamgriddb_api_key` rejects with this generic message. */
+let artworkSaveError: string | null = null;
+
+/** Seed the stored-key flag before rendering (Settings fetches it on open). */
+export function seedArtworkStatus(configured: boolean): void {
+  artworkStatus = { configured };
+}
+
+/** Makes every key save reject with this generic message until reinstalled. */
+export function failArtworkKeySave(message: string): void {
+  artworkSaveError = message;
+}
+
 /** Fixtures are exported so tests can assert against the exact ids returned. */
 export const fixtures = {
   primaryGameId: PRIMARY_GAME_ID,
@@ -174,10 +193,28 @@ const handlers: Record<string, Handler> = {
   },
   restore_revision: (args) =>
     restoreReport(typeof args.revision_id === "string" ? args.revision_id : ""),
+  steamgriddb_status: () => artworkStatus,
+  set_steamgriddb_api_key: (args) => {
+    if (artworkSaveError) {
+      throw new Error(artworkSaveError);
+    }
+    const key = typeof args.api_key === "string" ? args.api_key.trim() : "";
+    if (!key) {
+      throw new Error("SteamGridDB API key is required.");
+    }
+    artworkStatus = { configured: true };
+    return artworkStatus;
+  },
+  clear_steamgriddb_api_key: () => {
+    artworkStatus = { configured: false };
+    return artworkStatus;
+  },
 };
 
 export function installTauriStub(): InvokeCall[] {
   const calls: InvokeCall[] = [];
+  artworkStatus = { configured: false };
+  artworkSaveError = null;
 
   const internals: TauriInternalsStub = {
     invoke: async (cmd, args = {}) => {

@@ -235,6 +235,9 @@ export default function App() {
   const [snapshotMessage, setSnapshotMessage] = useState("");
   const [clientIdDraft, setClientIdDraft] = useState("");
   const [authUrl, setAuthUrl] = useState<string | null>(null);
+  /** Flag only: the SteamGridDB key lives in the OS keyring, never in the UI. */
+  const [artworkConfigured, setArtworkConfigured] = useState(false);
+  const [steamGridKeyDraft, setSteamGridKeyDraft] = useState("");
 
   const titleInputRef = useRef<HTMLInputElement>(null);
   const [dirtyGames, setDirtyGames] = useState<Set<string>>(new Set());
@@ -458,6 +461,34 @@ export default function App() {
     };
   }, []);
 
+  /**
+   * SteamGridDB key state is fetched when the Settings view opens, not at
+   * startup: the library and restore flows never need it, so it must not add
+   * work (or a keyring read) to application startup.
+   */
+  useEffect(() => {
+    if (!isDesktop()) return;
+    if (view !== "settings") {
+      // Do not keep a typed secret around in memory after leaving Settings.
+      setSteamGridKeyDraft("");
+      return;
+    }
+    let cancelled = false;
+    void api
+      .steamgriddbStatus()
+      .then((next) => {
+        if (!cancelled) setArtworkConfigured(next.configured);
+      })
+      .catch((cause) => {
+        if (!cancelled) {
+          setError(cause instanceof Error ? cause.message : String(cause));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [view]);
+
   async function enroll(event: FormEvent) {
     event.preventDefault();
     if (!title.trim() || !savePath.trim()) {
@@ -577,6 +608,42 @@ export default function App() {
     if (result) {
       setDrive(result);
       setNotice("Google OAuth client id saved.");
+    }
+  }
+
+  /**
+   * Persist the SteamGridDB API key through the engine. Neither the key nor any
+   * fragment of it is ever placed in an error, notice, or log line: the backend
+   * returns a generic message and the success text is a fixed string.
+   */
+  async function saveSteamGridKey(event: FormEvent) {
+    event.preventDefault();
+    const key = steamGridKeyDraft.trim();
+    if (!key) {
+      setError("Enter a SteamGridDB API key.");
+      return;
+    }
+    const next = await run("Saving SteamGridDB API key", () =>
+      api.setSteamgriddbApiKey(key),
+    );
+    if (next) {
+      setArtworkConfigured(next.configured);
+      // Drop the secret from component state as soon as it is persisted.
+      setSteamGridKeyDraft("");
+      setNotice(
+        "SteamGridDB API key saved in the OS keyring. It is used for cover-art lookups only.",
+      );
+    }
+  }
+
+  async function removeSteamGridKey() {
+    const next = await run("Removing SteamGridDB API key", () =>
+      api.clearSteamgriddbApiKey(),
+    );
+    if (next) {
+      setArtworkConfigured(next.configured);
+      setSteamGridKeyDraft("");
+      setNotice("SteamGridDB API key removed from the OS keyring.");
     }
   }
 
@@ -1137,27 +1204,48 @@ export default function App() {
         <section className="panel" aria-labelledby="settings-artwork">
           <div className="panel-title">
             <h2 id="settings-artwork">SteamGridDB</h2>
-            <span className="muted tiny">Not configured</span>
+            <span className="muted tiny">
+              {artworkConfigured ? "Configured" : "Not configured"}
+            </span>
           </div>
-          <div className="settings-rows">
-            <div className="setting-row">
-              <div>
-                <strong>API key</strong>
-                <span className="muted" id="steamgriddb-note">
-                  Reserved for SteamGridDB cover art. Cover art is generated
-                  locally from each title until this integration ships.
-                </span>
-              </div>
+          <form className="stack" onSubmit={saveSteamGridKey}>
+            <label>
+              API key
               <input
-                type="text"
+                type="password"
+                value={steamGridKeyDraft}
+                onChange={(event) => setSteamGridKeyDraft(event.target.value)}
                 aria-label="SteamGridDB API key"
                 aria-describedby="steamgriddb-note"
-                placeholder="Not yet available"
-                disabled
+                placeholder={
+                  artworkConfigured
+                    ? "Stored in the OS keyring"
+                    : "Paste your SteamGridDB API key"
+                }
+                autoComplete="off"
                 spellCheck={false}
               />
+            </label>
+            <p className="muted small" id="steamgriddb-note">
+              Used for cover-art lookups. The key is kept in the OS keyring and is
+              never written to the SaveSync database or to logs.
+            </p>
+            <div className="row">
+              <button className="ghost" type="submit" disabled={!!busy}>
+                Save key
+              </button>
+              {artworkConfigured && (
+                <button
+                  className="ghost"
+                  type="button"
+                  onClick={() => void removeSteamGridKey()}
+                  disabled={!!busy}
+                >
+                  Remove key
+                </button>
+              )}
             </div>
-          </div>
+          </form>
         </section>
       </section>
     );

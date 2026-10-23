@@ -1,6 +1,7 @@
 import { invoke, listenEvent } from "./tauri";
 import type {
   AppStatus,
+  ArtworkStatus,
   Conflict,
   DirtyEvent,
   DiscoveredGame,
@@ -53,6 +54,13 @@ export const api = {
   openAuthUrl: (url: string) => invoke<void>("open_auth_url", { url }),
 
   disconnectGoogle: () => invoke<GoogleStatus>("disconnect_google"),
+
+  setSteamgriddbApiKey: (api_key: string) =>
+    invoke<ArtworkStatus>("set_steamgriddb_api_key", { api_key }),
+
+  steamgriddbStatus: () => invoke<ArtworkStatus>("steamgriddb_status"),
+
+  clearSteamgriddbApiKey: () => invoke<ArtworkStatus>("clear_steamgriddb_api_key"),
 
   sync: (game_id: string) => invoke<SyncReport>("sync_game", { game_id }),
 

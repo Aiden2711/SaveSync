@@ -87,7 +87,7 @@ describe("top navigation", () => {
     ).toBeInTheDocument();
   });
 
-  it("reserves a Settings section for the SteamGridDB API key", async () => {
+  it("exposes a functional SteamGridDB API key field in Settings", async () => {
     const user = userEvent.setup();
     render(<App />);
 
@@ -98,6 +98,6 @@ describe("top navigation", () => {
       await screen.findByRole("heading", { name: "SteamGridDB" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "Theme" })).toBeInTheDocument();
-    expect(screen.getByLabelText("SteamGridDB API key")).toBeDisabled();
+    expect(screen.getByLabelText("SteamGridDB API key")).toBeEnabled();
   });
 });
