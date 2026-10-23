@@ -34,7 +34,9 @@ This document defines project-specific agent rules, architectural boundaries, co
 
 ### Current Phase
 
-Phase 3 (platform adapters and production hardening) is in progress. The active work item is discovery review / multi-location support, specified in `savesync-docs/specs/2026-10-21-discovery-review-multi-location-design.md` and planned in `savesync-docs/plans/2026-10-21-discovery-review-multi-location.md`.
+Phase 3 (platform adapters and production hardening) is in progress. The active work item is the SteamGridDB cover-art pipeline: the core client landed in `1270f65` (`savesync-core/src/artwork.rs`), with engine-side caching, the Tauri IPC and image-serving layer, and UI rendering still in flight. Game launching and controller-aware prompts remain backlog items in `savesync-docs/roadmap.md`.
+
+The desktop shell uses the "Console System UI, cool" design system documented in `DESIGN.md`. The earlier "Warm Console" palette described in `savesync-docs/specs/2026-10-23-ui-warm-console-theme.md` is superseded — do not reintroduce warm brown surfaces, grain, or the `SS` brand badge.
 
 ## Permanent Project Rules
 
