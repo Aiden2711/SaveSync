@@ -34,6 +34,15 @@ fn png_payload(tag: u8) -> Vec<u8> {
     bytes
 }
 
+/// JPEG-signature payload. Used to prove the cache name follows the bytes
+/// rather than the MIME type declared in the grids response.
+fn jpeg_payload(tag: u8) -> Vec<u8> {
+    let mut bytes = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+    bytes.extend_from_slice(b"JFIF\0");
+    bytes.push(tag);
+    bytes
+}
+
 struct ScriptedTransport {
     responses: Mutex<VecDeque<HttpResponse>>,
 }
@@ -400,5 +409,98 @@ fn cover_file_rejects_an_absolute_path() {
     assert!(
         matches!(error, Error::InvalidState(_)),
         "expected an out-of-cache rejection, got {error:?}"
+    );
+}
+
+/// `grids_hit` declares `"mime": "image/png"`; the bytes are a JPEG. The cache
+/// name, the recorded path, and the served media type must follow the bytes.
+#[test]
+fn cached_extension_follows_the_bytes_not_the_declared_mime() {
+    let mut fixture = Fixture::new();
+    let payload = jpeg_payload(8);
+    let client = Fixture::client(cover_round(&payload));
+
+    let updated = fixture
+        .engine
+        .fetch_cover_art(&client, API_KEY, &fixture.game.id)
+        .unwrap();
+
+    let expected_name = format!("{}.jpg", fixture.game.id);
+    let expected_relative = format!("covers/{expected_name}");
+    assert_eq!(
+        updated.cover_path.as_deref(),
+        Some(expected_relative.as_str())
+    );
+
+    let on_disk = fixture.engine.covers_dir().join(&expected_name);
+    assert_eq!(fs::read(&on_disk).unwrap(), payload);
+    assert_eq!(
+        fixture.cached_entries(),
+        vec![expected_name],
+        "no wrongly-named, staging, or partial file may remain in the cache"
+    );
+
+    let resolved = fixture
+        .engine
+        .cover_file(&fixture.game.id)
+        .unwrap()
+        .expect("the recorded cover resolves");
+    assert_eq!(resolved, on_disk);
+}
+
+/// A re-fetch in a different format moves the record to the new extension and
+/// prunes the old file, so the cache never holds two copies.
+#[test]
+fn refetch_in_another_format_prunes_the_old_extension() {
+    let mut fixture = Fixture::new();
+    let first = png_payload(9);
+    let second = jpeg_payload(10);
+    let client = Fixture::client([cover_round(&first), cover_round(&second)].concat());
+
+    let initial = fixture
+        .engine
+        .fetch_cover_art(&client, API_KEY, &fixture.game.id)
+        .unwrap();
+    assert!(
+        initial
+            .cover_path
+            .as_deref()
+            .is_some_and(|path| path.ends_with(".png")),
+        "expected a PNG cover first, got {:?}",
+        initial.cover_path
+    );
+
+    let updated = fixture
+        .engine
+        .fetch_cover_art(&client, API_KEY, &fixture.game.id)
+        .unwrap();
+
+    let expected_name = format!("{}.jpg", fixture.game.id);
+    assert!(
+        updated
+            .cover_path
+            .as_deref()
+            .is_some_and(|path| path.ends_with(".jpg")),
+        "expected a JPEG cover after the re-fetch, got {:?}",
+        updated.cover_path
+    );
+    assert_eq!(
+        fixture.cached_entries(),
+        vec![expected_name],
+        "the stale PNG must be pruned once the record points at the JPEG"
+    );
+    assert_eq!(
+        fs::read(fixture.cover_path_on_disk()).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert_eq!(
+        fs::read(
+            fixture
+                .engine
+                .covers_dir()
+                .join(format!("{}.jpg", fixture.game.id))
+        )
+        .unwrap(),
+        second
     );
 }

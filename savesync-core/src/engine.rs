@@ -206,6 +206,10 @@ impl SaveSyncEngine {
         api_key: &str,
         game_id: &str,
     ) -> Result<Game> {
+        // The game id becomes a file name, so it is validated before any
+        // database lookup and before any network request.
+        let stem = cover_stem(game_id)?;
+
         let game = store::require_game(self.db.connection(), game_id)?;
 
         let sgdb_id = client
@@ -215,16 +219,22 @@ impl SaveSyncEngine {
             .pick_grid(api_key, sgdb_id)?
             .ok_or_else(|| Error::NotFound("no cover art available for this game".into()))?;
 
-        // The game id becomes a file name, so it is validated before it is
-        // ever joined onto a path.
-        let stem = cover_stem(game_id)?;
-        let extension = cover_extension(&candidate.mime);
-        let dest = self.paths.covers().join(format!("{stem}.{extension}"));
+        // The final name depends on the image's own signature, which is only
+        // known after the download, so the completed file lands on a staging
+        // name inside the cache first and is then moved to `covers/<id>.<ext>`.
+        let staging = self.paths.covers().join(format!("{stem}.download"));
 
         // Validates the CDN URL host and scheme, caps the size, sniffs the
         // magic bytes, and writes through `.part` + rename. Nothing here
         // re-implements any of that.
-        client.download_grid(api_key, &candidate, &dest)?;
+        let downloaded = client.download_grid(api_key, &candidate, &staging)?;
+        let extension = downloaded.extension;
+
+        let dest = self.paths.covers().join(format!("{stem}.{extension}"));
+        if let Err(error) = crate::artwork::rename_over(&staging, &dest) {
+            let _ = fs::remove_file(&staging);
+            return Err(error);
+        }
 
         let relative = format!("covers/{stem}.{extension}");
         let updated = self.db.transaction(|tx| {
@@ -600,18 +610,6 @@ fn cover_stem(game_id: &str) -> Result<&str> {
         ));
     }
     Ok(game_id)
-}
-
-/// Map an upstream MIME type to a cache file extension.
-///
-/// PNG is the default for unknown types; `download_grid` independently sniffs
-/// the real bytes, so a wrong MIME cannot smuggle a non-image into the cache.
-fn cover_extension(mime: &str) -> &'static str {
-    match mime {
-        "image/jpeg" => "jpg",
-        "image/webp" => "webp",
-        _ => "png",
-    }
 }
 
 fn load_or_create_device(db: &mut Db) -> Result<Device> {

@@ -52,13 +52,30 @@ const MALFORMED_RESPONSE: &str = "SteamGridDB returned an unreadable response.";
 
 /// One downloadable cover candidate returned by SteamGridDB.
 ///
-/// Holds only public metadata; it never carries the API key.
+/// Holds only public metadata; it never carries the API key. `width` and
+/// `height` are advisory ranking hints, so they may be zero when the response
+/// omits them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GridCandidate {
     pub url: String,
     pub width: u32,
     pub height: u32,
+    /// Advisory only: the cache file extension is derived from the downloaded
+    /// bytes, never from this declared type.
     pub mime: String,
+}
+
+/// A completed cover download.
+///
+/// `extension` comes from the image's own signature, so a wrong or missing
+/// `Content-Type`/`mime` can neither misname the cached file nor make the
+/// command layer serve the wrong media type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DownloadedGrid {
+    /// Number of bytes written.
+    pub size: u64,
+    /// Extension implied by the magic bytes: `png`, `jpg`, or `webp`.
+    pub extension: &'static str,
 }
 
 /// SteamGridDB client over a mockable [`HttpTransport`].
@@ -114,8 +131,14 @@ impl SteamGridDbClient {
 
     /// Pick the best portrait cover for a SteamGridDB game id.
     ///
-    /// Prefers the aspect ratio closest to 2:3, breaking ties by larger area.
-    /// Returns `Ok(None)` when the game has no usable grids.
+    /// Dimensions are advisory. When at least one entry reports usable
+    /// dimensions, the one whose aspect ratio is closest to 2:3 wins, breaking
+    /// ties by larger area. When no entry carries dimensions, ranking degrades
+    /// to the highest upstream `score`, breaking ties by the largest `id` so
+    /// the choice stays deterministic.
+    ///
+    /// Returns `Ok(None)` only when the response contains no entry with a
+    /// non-empty URL, or the API reports a `404`.
     pub fn pick_grid(&self, api_key: &str, sgdb_game_id: u64) -> Result<Option<GridCandidate>> {
         let url = grids_url(sgdb_game_id)?;
         let response = execute_with_retry(self.transport.as_ref(), &self.policy, || {
@@ -136,7 +159,8 @@ impl SteamGridDbClient {
         Ok(best_grid(&parsed.data))
     }
 
-    /// Download a cover to `dest` atomically, returning the bytes written.
+    /// Download a cover to `dest` atomically, returning the bytes written and
+    /// the kind detected from the image signature.
     ///
     /// The destination's parent directory is created if needed. The image is
     /// streamed to `<dest>.part`, size-checked, signature-checked, flushed,
@@ -153,7 +177,7 @@ impl SteamGridDbClient {
         api_key: &str,
         candidate: &GridCandidate,
         dest: &Path,
-    ) -> Result<u64> {
+    ) -> Result<DownloadedGrid> {
         // Accepted for call-site symmetry with `search_game` and `pick_grid`,
         // but deliberately unused: the image request goes to the CDN, which
         // must never receive the credential.
@@ -209,16 +233,19 @@ impl SteamGridDbClient {
         let read = file
             .read(&mut header)
             .map_err(|error| Error::io(&part, error))?;
-        if !is_supported_image(&header[..read]) {
+        let Some(kind) = image_kind(&header[..read]) else {
             return Err(invalid_image());
-        }
+        };
 
         file.sync_all().map_err(|error| Error::io(&part, error))?;
         drop(file);
 
         rename_over(&part, dest)?;
         guard.commit();
-        Ok(size)
+        Ok(DownloadedGrid {
+            size,
+            extension: kind.extension(),
+        })
     }
 }
 
@@ -245,17 +272,21 @@ struct GridsResponse {
     data: Vec<GridEntry>,
 }
 
-/// Tolerant of entries with missing metadata: unknown fields are ignored and
-/// entries without usable dimensions or a URL are skipped rather than failing
-/// the whole response.
+/// Tolerant of entries with missing metadata: unknown fields are ignored, a
+/// missing URL is the only disqualifier, and dimensions, score, and MIME type
+/// are all optional ranking hints.
 #[derive(Deserialize)]
 struct GridEntry {
+    #[serde(default)]
+    id: u64,
     #[serde(default)]
     url: String,
     #[serde(default)]
     width: u32,
     #[serde(default)]
     height: u32,
+    #[serde(default)]
+    score: f64,
     #[serde(default)]
     mime: String,
 }
@@ -308,10 +339,18 @@ fn check_status(response: &HttpResponse) -> Result<()> {
     Ok(())
 }
 
+/// Rank candidate grids, preferring the aspect ratio closest to 2:3.
+///
+/// Any entry with a URL is a usable fallback: dimensions are advisory upstream
+/// metadata, so an entry that omits them is still downloadable. When no entry
+/// reports dimensions, the highest `score` wins, with the largest `id` as a
+/// deterministic tie-break. URL safety is enforced later, before the download
+/// request is made.
 fn best_grid(entries: &[GridEntry]) -> Option<GridCandidate> {
-    entries
-        .iter()
-        .filter(|entry| entry.width > 0 && entry.height > 0 && !entry.url.is_empty())
+    let with_url = || entries.iter().filter(|entry| !entry.url.is_empty());
+
+    let best = with_url()
+        .filter(|entry| entry.width > 0 && entry.height > 0)
         .min_by(|left, right| {
             let left_ratio =
                 (f64::from(left.width) / f64::from(left.height) - TARGET_ASPECT_RATIO).abs();
@@ -323,12 +362,20 @@ fn best_grid(entries: &[GridEntry]) -> Option<GridCandidate> {
                 right_area.cmp(&left_area)
             })
         })
-        .map(|entry| GridCandidate {
-            url: entry.url.clone(),
-            width: entry.width,
-            height: entry.height,
-            mime: entry.mime.clone(),
-        })
+        .or_else(|| {
+            with_url().max_by(|left, right| {
+                left.score
+                    .total_cmp(&right.score)
+                    .then_with(|| left.id.cmp(&right.id))
+            })
+        });
+
+    best.map(|entry| GridCandidate {
+        url: entry.url.clone(),
+        width: entry.width,
+        height: entry.height,
+        mime: entry.mime.clone(),
+    })
 }
 
 /// Enforce the download trust boundary before a request is made.
@@ -349,15 +396,40 @@ fn validate_grid_url(raw: &str) -> Result<()> {
     }
 }
 
-fn is_supported_image(bytes: &[u8]) -> bool {
+/// Image container detected from the file signature alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImageKind {
+    Png,
+    Jpeg,
+    WebP,
+}
+
+impl ImageKind {
+    /// Cache file extension for this kind.
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Jpeg => "jpg",
+            Self::WebP => "webp",
+        }
+    }
+}
+
+/// Detect a supported image from its magic bytes.
+///
+/// The bytes are authoritative; a declared MIME type is not consulted.
+fn image_kind(bytes: &[u8]) -> Option<ImageKind> {
     const PNG: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
     if bytes.starts_with(&PNG) {
-        return true;
+        return Some(ImageKind::Png);
     }
     if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        return true;
+        return Some(ImageKind::Jpeg);
     }
-    bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP"
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return Some(ImageKind::WebP);
+    }
+    None
 }
 
 fn part_path(dest: &Path) -> PathBuf {
@@ -371,7 +443,10 @@ fn part_path(dest: &Path) -> PathBuf {
 /// `rename` replaces an existing target on Unix. Windows refuses to rename over
 /// an existing file, so the destination is removed first; the window in which
 /// no file exists is acceptable for a cache, whereas a partial image is not.
-fn rename_over(part: &Path, dest: &Path) -> Result<()> {
+///
+/// Shared with the engine, which downloads to a staging name and then moves the
+/// completed file to the extension implied by its bytes.
+pub(crate) fn rename_over(part: &Path, dest: &Path) -> Result<()> {
     match fs::rename(part, dest) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -653,6 +728,66 @@ mod tests {
         assert!(client.pick_grid("key", 7).unwrap().is_none());
     }
 
+    /// Older SteamGridDB payloads omit `width`, `height`, and `mime`. They must
+    /// still yield a downloadable candidate instead of being filtered away.
+    #[test]
+    fn pick_grid_accepts_entries_without_dimensions() {
+        let (client, _) = client(vec![json_response(
+            200,
+            json!({
+                "success": true,
+                "data": [{
+                    "id": 120,
+                    "score": 1,
+                    "url": "https://cdn2.steamgriddb.com/grid/x.png"
+                }]
+            }),
+        )]);
+
+        let picked = client
+            .pick_grid("key", 7)
+            .unwrap()
+            .expect("an entry with a URL is still usable");
+        assert_eq!(picked.url, "https://cdn2.steamgriddb.com/grid/x.png");
+        assert_eq!((picked.width, picked.height), (0, 0));
+    }
+
+    /// Without dimensions, ranking degrades to score and then to the largest
+    /// id, so the same response always picks the same grid.
+    #[test]
+    fn pick_grid_without_dimensions_ranks_by_score_then_id() {
+        let (client, _) = client(vec![json_response(
+            200,
+            json!({
+                "success": true,
+                "data": [
+                    {
+                        "id": 5,
+                        "score": 0.2,
+                        "url": "https://cdn2.steamgriddb.com/grid/low.png"
+                    },
+                    {
+                        "id": 9,
+                        "score": 0.8,
+                        "url": "https://cdn2.steamgriddb.com/grid/tie-low-id.png"
+                    },
+                    {
+                        "id": 12,
+                        "score": 0.8,
+                        "url": "https://cdn2.steamgriddb.com/grid/tie-high-id.png"
+                    }
+                ]
+            }),
+        )]);
+
+        let picked = client.pick_grid("key", 7).unwrap().unwrap();
+        assert_eq!(
+            picked.url,
+            "https://cdn2.steamgriddb.com/grid/tie-high-id.png"
+        );
+        assert_eq!((picked.width, picked.height), (0, 0));
+    }
+
     #[test]
     fn download_rejects_non_allowlisted_host_without_a_request() {
         let (client, transport) = client(Vec::new());
@@ -766,10 +901,45 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(written, PNG.len() as u64);
+        assert_eq!(written.size, PNG.len() as u64);
+        assert_eq!(written.extension, "png");
         assert_eq!(fs::read(&dest).unwrap(), PNG);
         assert!(!part_path(&dest).exists());
         assert_eq!(transport.calls(), 1);
+    }
+
+    /// The cache file name must follow the bytes, not a declared type that can
+    /// disagree with them.
+    #[test]
+    fn download_reports_the_extension_implied_by_the_bytes() {
+        const JPEG: &[u8] = &[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46];
+        const WEBP: &[u8] = &[
+            b'R', b'I', b'F', b'F', 0x24, 0x00, 0x00, 0x00, b'W', b'E', b'B', b'P',
+        ];
+        let (client, _) = client(vec![
+            binary_response(200, &[("Content-Type", "image/png")], JPEG),
+            binary_response(200, &[("Content-Type", "image/png")], WEBP),
+        ]);
+
+        let dir = tempdir().unwrap();
+
+        let jpeg = client
+            .download_grid(
+                "key",
+                &candidate("https://cdn2.steamgriddb.com/grid/cover.png"),
+                &dir.path().join("jpeg.jpg"),
+            )
+            .unwrap();
+        assert_eq!(jpeg.extension, "jpg");
+
+        let webp = client
+            .download_grid(
+                "key",
+                &candidate("https://cdn2.steamgriddb.com/grid/cover.png"),
+                &dir.path().join("webp.webp"),
+            )
+            .unwrap();
+        assert_eq!(webp.extension, "webp");
     }
 
     /// The API key is a credential for `www.steamgriddb.com` only. The image
