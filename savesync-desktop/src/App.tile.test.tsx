@@ -150,10 +150,17 @@ afterEach(() => {
  * `@media` overrides are deliberately excluded: a rule written for narrow or
  * reduced-motion conditions must never be able to satisfy a base-layout
  * assertion, nor mask the absence of the base declaration.
+ *
+ * Selector groups match any of their members. Whether `svg` and `img` share a
+ * rule or get one each is a stylesheet style choice, so the lookup accepts both
+ * forms; it still requires the requested selector to appear verbatim in the
+ * group, and every declaration of that rule still has to be present.
  */
 function declarationsFor(selector: string): string[] {
   return declarationsWhere(
-    (rule) => rule.selector === selector && rule.media === null,
+    (rule) =>
+      rule.media === null &&
+      rule.selector.split(",").some((part) => part.trim() === selector),
   );
 }
 

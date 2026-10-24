@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, useMemo, useState } from "react";
 import { coverFor } from "../lib/cover";
 
 /**
@@ -12,6 +12,8 @@ const CREST_Y = 436;
 interface CoverArtProps {
   title: string;
   adapter: string;
+  /** Absolute URL of a cached cover, or nullish to draw the generated art. */
+  coverUrl?: string | null;
 }
 
 /**
@@ -21,129 +23,162 @@ interface CoverArtProps {
  * Purely presentational — `aria-hidden` — because the surrounding tile button
  * carries the accessible name. `preserveAspectRatio="xMidYMid slice"` lets the
  * same artwork fill a 2:3 tile and a 16:9 featured band without letterboxing.
+ *
+ * Kept separate from {@link CoverArt} so the monogram is not computed at all
+ * while a cached cover image is on screen.
  */
-function CoverArt({ title, adapter }: CoverArtProps) {
+const GeneratedArtwork = memo(function GeneratedArtwork({ title }: { title: string }) {
   const { palette, motif, monogram } = useMemo(() => coverFor(title), [title]);
   const glyphSize = Array.from(monogram).length > 1 ? 216 : 268;
 
   return (
+    <svg viewBox="0 0 600 900" preserveAspectRatio="xMidYMid slice" focusable="false">
+      <rect width="600" height="900" fill={palette.bg} />
+
+      {/* One large flat shape breaks the field into two tones. */}
+      <rect
+        x="-170"
+        y="-210"
+        width="580"
+        height="560"
+        rx="150"
+        fill={palette.bg2}
+      />
+      <rect
+        x="330"
+        y="600"
+        width="380"
+        height="380"
+        rx="140"
+        fill={palette.bg2}
+        opacity="0.55"
+      />
+
+      <g fill="none" stroke={palette.accent} strokeWidth="2.5">
+        {motif === "rings" && (
+          <>
+            <rect
+              x={CREST_X - 232}
+              y={CREST_Y - 232}
+              width="464"
+              height="464"
+              rx="128"
+              opacity="0.34"
+            />
+            <rect
+              x={CREST_X - 176}
+              y={CREST_Y - 176}
+              width="352"
+              height="352"
+              rx="100"
+              opacity="0.5"
+            />
+            <rect
+              x={CREST_X - 120}
+              y={CREST_Y - 120}
+              width="240"
+              height="240"
+              rx="70"
+              opacity="0.7"
+            />
+          </>
+        )}
+
+        {motif === "orbit" && (
+          <>
+            <circle cx={CREST_X} cy={CREST_Y} r="222" opacity="0.3" />
+            <circle cx={CREST_X} cy={CREST_Y} r="166" opacity="0.46" />
+            <circle cx={CREST_X} cy={CREST_Y} r="110" opacity="0.68" />
+          </>
+        )}
+
+        {motif === "slats" && (
+          <g transform={`rotate(-18 ${CREST_X} ${CREST_Y})`} strokeLinecap="round">
+            <line
+              x1={CREST_X - 190}
+              y1={CREST_Y - 96}
+              x2={CREST_X + 190}
+              y2={CREST_Y - 96}
+              opacity="0.3"
+              strokeWidth="30"
+            />
+            <line
+              x1={CREST_X - 214}
+              y1={CREST_Y}
+              x2={CREST_X + 214}
+              y2={CREST_Y}
+              opacity="0.46"
+              strokeWidth="30"
+            />
+            <line
+              x1={CREST_X - 190}
+              y1={CREST_Y + 96}
+              x2={CREST_X + 190}
+              y2={CREST_Y + 96}
+              opacity="0.68"
+              strokeWidth="30"
+            />
+          </g>
+        )}
+      </g>
+
+      <text
+        x={CREST_X}
+        y={CREST_Y}
+        textAnchor="middle"
+        dominantBaseline="central"
+        fill={palette.ink}
+        fontFamily='"Fredoka", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif'
+        fontSize={glyphSize}
+        fontWeight="600"
+        letterSpacing="-8"
+      >
+        {monogram}
+      </text>
+
+      <rect
+        x="28"
+        y="28"
+        width="544"
+        height="844"
+        rx="26"
+        fill="none"
+        stroke={palette.ink}
+        strokeOpacity="0.14"
+        strokeWidth="1.5"
+      />
+    </svg>
+  );
+});
+
+/**
+ * Cover art slot: a cached SteamGridDB image when one is available, otherwise
+ * the generated monogram. Both fill the same `aria-hidden` box, so the tile's
+ * accessible name is unaffected.
+ */
+function CoverArt({ title, adapter, coverUrl }: CoverArtProps) {
+  /**
+   * URL whose image failed to load. Storing the URL rather than a boolean means
+   * a new `coverUrl` is retried automatically: a successful re-fetch is never
+   * stuck on the fallback, and a broken cover never leaves an empty box.
+   */
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+
+  return (
     <span className="cover-art" data-adapter={adapter} aria-hidden="true">
-      <svg viewBox="0 0 600 900" preserveAspectRatio="xMidYMid slice" focusable="false">
-        <rect width="600" height="900" fill={palette.bg} />
-
-        {/* One large flat shape breaks the field into two tones. */}
-        <rect
-          x="-170"
-          y="-210"
-          width="580"
-          height="560"
-          rx="150"
-          fill={palette.bg2}
+      {coverUrl && coverUrl !== failedUrl ? (
+        <img
+          className="cover-art-image"
+          src={coverUrl}
+          alt=""
+          aria-hidden="true"
+          draggable={false}
+          decoding="async"
+          onError={() => setFailedUrl(coverUrl)}
         />
-        <rect
-          x="330"
-          y="600"
-          width="380"
-          height="380"
-          rx="140"
-          fill={palette.bg2}
-          opacity="0.55"
-        />
-
-        <g fill="none" stroke={palette.accent} strokeWidth="2.5">
-          {motif === "rings" && (
-            <>
-              <rect
-                x={CREST_X - 232}
-                y={CREST_Y - 232}
-                width="464"
-                height="464"
-                rx="128"
-                opacity="0.34"
-              />
-              <rect
-                x={CREST_X - 176}
-                y={CREST_Y - 176}
-                width="352"
-                height="352"
-                rx="100"
-                opacity="0.5"
-              />
-              <rect
-                x={CREST_X - 120}
-                y={CREST_Y - 120}
-                width="240"
-                height="240"
-                rx="70"
-                opacity="0.7"
-              />
-            </>
-          )}
-
-          {motif === "orbit" && (
-            <>
-              <circle cx={CREST_X} cy={CREST_Y} r="222" opacity="0.3" />
-              <circle cx={CREST_X} cy={CREST_Y} r="166" opacity="0.46" />
-              <circle cx={CREST_X} cy={CREST_Y} r="110" opacity="0.68" />
-            </>
-          )}
-
-          {motif === "slats" && (
-            <g transform={`rotate(-18 ${CREST_X} ${CREST_Y})`} strokeLinecap="round">
-              <line
-                x1={CREST_X - 190}
-                y1={CREST_Y - 96}
-                x2={CREST_X + 190}
-                y2={CREST_Y - 96}
-                opacity="0.3"
-                strokeWidth="30"
-              />
-              <line
-                x1={CREST_X - 214}
-                y1={CREST_Y}
-                x2={CREST_X + 214}
-                y2={CREST_Y}
-                opacity="0.46"
-                strokeWidth="30"
-              />
-              <line
-                x1={CREST_X - 190}
-                y1={CREST_Y + 96}
-                x2={CREST_X + 190}
-                y2={CREST_Y + 96}
-                opacity="0.68"
-                strokeWidth="30"
-              />
-            </g>
-          )}
-        </g>
-
-        <text
-          x={CREST_X}
-          y={CREST_Y}
-          textAnchor="middle"
-          dominantBaseline="central"
-          fill={palette.ink}
-          fontFamily='"Fredoka", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif'
-          fontSize={glyphSize}
-          fontWeight="600"
-          letterSpacing="-8"
-        >
-          {monogram}
-        </text>
-
-        <rect
-          x="28"
-          y="28"
-          width="544"
-          height="844"
-          rx="26"
-          fill="none"
-          stroke={palette.ink}
-          strokeOpacity="0.14"
-          strokeWidth="1.5"
-        />
-      </svg>
+      ) : (
+        <GeneratedArtwork title={title} />
+      )}
     </span>
   );
 }

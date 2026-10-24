@@ -62,6 +62,12 @@ export const api = {
 
   clearSteamgriddbApiKey: () => invoke<ArtworkStatus>("clear_steamgriddb_api_key"),
 
+  fetchCoverArt: (game_id: string) => invoke<Game>("fetch_cover_art", { game_id }),
+
+  clearCoverArt: (game_id: string) => invoke<Game>("clear_cover_art", { game_id }),
+
+  coverUrl: (game_id: string) => invoke<string | null>("cover_url", { game_id }),
+
   sync: (game_id: string) => invoke<SyncReport>("sync_game", { game_id }),
 
   unlinkGame: (game_id: string) => invoke<Game>("unlink_game", { game_id }),

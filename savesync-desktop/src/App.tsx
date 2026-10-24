@@ -228,6 +228,11 @@ export default function App() {
   /** Flag only: the SteamGridDB key lives in the OS keyring, never in the UI. */
   const [artworkConfigured, setArtworkConfigured] = useState(false);
   const [steamGridKeyDraft, setSteamGridKeyDraft] = useState("");
+  /**
+   * Resolved `savesync-cover:` URLs, keyed by game id. Only games with a cached
+   * cover appear here; everything else keeps the generated monogram.
+   */
+  const [coverUrls, setCoverUrls] = useState<Record<string, string>>({});
 
   const titleInputRef = useRef<HTMLInputElement>(null);
   const [dirtyGames, setDirtyGames] = useState<Set<string>>(new Set());
@@ -350,6 +355,42 @@ export default function App() {
     [],
   );
 
+  /**
+   * Resolve cover URLs for games that actually have a cached cover.
+   *
+   * `cover_url` is never invoked for a game whose `cover_path` is null, so the
+   * common case (no artwork fetched yet) costs zero IPC. A per-game failure is
+   * swallowed: a missing cover is not worth an error banner, and the tile
+   * simply keeps its generated monogram.
+   *
+   * The cache-busting query is derived from `updated_at`, which the engine bumps
+   * on every `set_cover_path`, so a re-fetched cover gets a new URL.
+   */
+  const loadCoverUrls = useCallback(async (list: Game[]) => {
+    const withCovers = list.filter((game) => game.cover_path);
+    if (withCovers.length === 0) {
+      // Also drops URLs for games that were unlinked since the last load.
+      setCoverUrls({});
+      return;
+    }
+    const resolved = await Promise.all(
+      withCovers.map(async (game) => {
+        try {
+          const url = await api.coverUrl(game.id);
+          if (!url) return null;
+          return [game.id, `${url}?v=${encodeURIComponent(game.updated_at)}`] as const;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    const next: Record<string, string> = {};
+    for (const entry of resolved) {
+      if (entry) next[entry[0]] = entry[1];
+    }
+    setCoverUrls(next);
+  }, []);
+
   const loadGames = useCallback(async () => {
     try {
       const list = await api.listGames();
@@ -357,10 +398,12 @@ export default function App() {
       setSelectedId((current) =>
         current && list.some((game) => game.id === current) ? current : null,
       );
+      // Not awaited: a cover URL never gates the library rendering.
+      void loadCoverUrls(list);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
-  }, []);
+  }, [loadCoverUrls]);
 
   const loadGameDetails = useCallback(async (gameId: string) => {
     try {
@@ -550,6 +593,32 @@ export default function App() {
       if (selectedId === gameId) await loadGameDetails(gameId);
     }
   }
+
+  /**
+   * Fetch and cache cover art for one game, then show it immediately.
+   *
+   * A failed fetch leaves `games` and `coverUrls` untouched, so the existing
+   * monogram (or a previously cached cover) stays in place and the error is
+   * reported through `run`. The follow-up `cover_url` call is best-effort: a
+   * failure there must not escape the click handler.
+   */
+  const fetchCoverArt = useCallback(
+    async (gameId: string) => {
+      const updated = await run("Fetching cover art", () => api.fetchCoverArt(gameId));
+      if (!updated) return;
+      setGames((prev) => prev.map((game) => (game.id === updated.id ? updated : game)));
+      let url: string | null = null;
+      try {
+        url = await api.coverUrl(updated.id);
+      } catch {
+        url = null;
+      }
+      if (url) {
+        setCoverUrls((prev) => ({ ...prev, [updated.id]: `${url}?v=${Date.now()}` }));
+      }
+    },
+    [run],
+  );
 
   async function requestRestore(revision: Revision, exactMirror: boolean) {
     setDialogState({ kind: "restore", revision, exactMirror });
@@ -860,7 +929,11 @@ export default function App() {
                     onKeyDown={(event) => openMenuFromKeyboard(event, game.id)}
                   >
                     <span className="tile-art">
-                      <CoverArt title={game.title} adapter={game.adapter_type} />
+                      <CoverArt
+                        title={game.title}
+                        adapter={game.adapter_type}
+                        coverUrl={coverUrls[game.id]}
+                      />
                     </span>
                     <span className="tile-label">
                       <span className="tile-head">
@@ -920,7 +993,11 @@ export default function App() {
 
         <header className="detail-header">
           <div className="detail-cover">
-            <CoverArt title={game.title} adapter={game.adapter_type} />
+            <CoverArt
+              title={game.title}
+              adapter={game.adapter_type}
+              coverUrl={coverUrls[game.id]}
+            />
           </div>
           <div className="detail-copy">
             <h2 id="game-title">{game.title}</h2>
@@ -1493,6 +1570,25 @@ export default function App() {
                 }}
               >
                 {busy === "Syncing with Google Drive" ? "Syncing…" : "Sync now"}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                className="menu-item"
+                disabled={!!busy}
+                title={
+                  busy === "Fetching cover art"
+                    ? "Fetching cover art…"
+                    : "Search SteamGridDB for box art"
+                }
+                onClick={(event) => {
+                  event.stopPropagation();
+                  closeMenu();
+                  if (menuGameId) void fetchCoverArt(menuGameId);
+                }}
+              >
+                {busy === "Fetching cover art" ? "Fetching cover art…" : "Fetch cover art"}
               </button>
               <hr className="menu-separator" />
               <button

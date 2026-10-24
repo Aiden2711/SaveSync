@@ -133,6 +133,20 @@ const conflicts: Conflict[] = [
 const dirtyGameIds: string[] = [SECOND_GAME_ID];
 
 /**
+ * Pristine copy of the game fixtures. Handlers mutate `cover_path` and
+ * `updated_at`, so every `installTauriStub` restores the shared array in place
+ * to keep test order from leaking state into the next file.
+ */
+const baselineGames: Game[] = games.map((game) => ({ ...game }));
+
+/** Game ids with a cached cover in the stub's fake blob store. */
+const seededCovers = new Set<string>();
+/** Monotonic clock so a re-fetched cover gets a distinct `updated_at`. */
+let coverRevision = 0;
+/** When set, the next `fetch_cover_art` rejects with this message. */
+let coverFetchError: string | null = null;
+
+/**
  * SteamGridDB key state for the stub. It tracks only whether a key is stored —
  * exactly like the Rust command surface, which never returns the key itself.
  */
@@ -148,6 +162,22 @@ export function seedArtworkStatus(configured: boolean): void {
 /** Makes every key save reject with this generic message until reinstalled. */
 export function failArtworkKeySave(message: string): void {
   artworkSaveError = message;
+}
+
+/**
+ * Seed a cached cover for one game before rendering.
+ *
+ * `cover_path` is set as well: `App` only asks for a URL when the path is
+ * non-null, so without it no image would ever appear.
+ */
+export function seedCover(gameId: string): void {
+  seededCovers.add(gameId);
+  setCoverPath(gameId, `covers/${gameId}.png`);
+}
+
+/** Makes the next `fetch_cover_art` reject with this message, then clear it. */
+export function failCoverFetch(message: string): void {
+  coverFetchError = message;
 }
 
 /** Fixtures are exported so tests can assert against the exact ids returned. */
@@ -174,6 +204,22 @@ function assertKnownGame(args: Record<string, unknown>): void {
   if (!games.some((game) => game.id === args.game_id)) {
     throw new Error(`Tauri stub: unknown game_id ${String(args.game_id)}`);
   }
+}
+
+/**
+ * Point one game at a cached cover (or clear it) and bump its `updated_at`,
+ * mirroring the engine, which bumps the timestamp on every cover mutation.
+ * Returns a copy so callers cannot alias the mutable fixture array.
+ */
+function setCoverPath(gameId: string, coverPath: string | null): Game {
+  const game = games.find((candidate) => candidate.id === gameId);
+  if (!game) {
+    throw new Error(`Tauri stub: unknown game_id ${gameId}`);
+  }
+  coverRevision += 1;
+  game.cover_path = coverPath;
+  game.updated_at = `2026-01-06T00:00:${String(coverRevision % 60).padStart(2, "0")}Z`;
+  return { ...game };
 }
 
 type Handler = (args: Record<string, unknown>) => unknown;
@@ -209,12 +255,47 @@ const handlers: Record<string, Handler> = {
     artworkStatus = { configured: false };
     return artworkStatus;
   },
+  cover_url: (args) => {
+    const gameId = String(args.game_id);
+    return seededCovers.has(gameId) ? `http://savesync-cover.localhost/${gameId}` : null;
+  },
+  fetch_cover_art: (args) => {
+    assertKnownGame(args);
+    const gameId = String(args.game_id);
+    if (coverFetchError) {
+      // One-shot, so a test can assert the retry path independently.
+      const message = coverFetchError;
+      coverFetchError = null;
+      throw new Error(message);
+    }
+    // Mirrors the Rust command: the keyring is read inside the command and the
+    // caller only ever sees a generic message.
+    if (!artworkStatus.configured) {
+      throw new Error("Configure the SteamGridDB API key in Settings first.");
+    }
+    seededCovers.add(gameId);
+    return setCoverPath(gameId, `covers/${gameId}.png`);
+  },
+  clear_cover_art: (args) => {
+    assertKnownGame(args);
+    const gameId = String(args.game_id);
+    seededCovers.delete(gameId);
+    return setCoverPath(gameId, null);
+  },
 };
 
 export function installTauriStub(): InvokeCall[] {
   const calls: InvokeCall[] = [];
   artworkStatus = { configured: false };
   artworkSaveError = null;
+
+  // Handlers mutate the shared fixture array, so reset it in place from the
+  // pristine copy: tests must not observe a previous file's cover state.
+  games.length = 0;
+  games.push(...baselineGames.map((game) => ({ ...game })));
+  seededCovers.clear();
+  coverFetchError = null;
+  coverRevision = 0;
 
   const internals: TauriInternalsStub = {
     invoke: async (cmd, args = {}) => {

@@ -647,7 +647,8 @@ label {
     transform: none;
   }
 
-  .tile-art .cover-art svg {
+  .tile-art .cover-art svg,
+  .tile-art .cover-art img {
     transform: none;
   }
 }
@@ -672,7 +673,8 @@ label {
   border-radius: 0;
 }
 
-.tile-art .cover-art svg {
+.tile-art .cover-art svg,
+.tile-art .cover-art img {
   display: block;
   width: 100%;
   height: 100%;
@@ -680,7 +682,9 @@ label {
 }
 
 .tile:hover .tile-art .cover-art svg,
-.tile:focus-visible .tile-art .cover-art svg {
+.tile:focus-visible .tile-art .cover-art svg,
+.tile:hover .tile-art .cover-art img,
+.tile:focus-visible .tile-art .cover-art img {
   transform: scale(1.02);
 }
 
@@ -761,6 +765,13 @@ label {
   display: block;
   width: 100%;
   height: 100%;
+}
+
+.cover-art img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .dirty-badge {

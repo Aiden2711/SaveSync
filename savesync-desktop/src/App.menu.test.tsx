@@ -72,7 +72,9 @@ describe("game tile context menu", () => {
 
     fireEvent.contextMenu(tile, { clientX: 100, clientY: 100 });
     const menu = await screen.findByRole("menu", { name: "Game actions" });
-    const restoreItem = menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')[2];
+    const restoreItem = within(menu).getByRole("menuitem", {
+      name: "Restore latest…",
+    });
 
     await user.click(restoreItem);
 
@@ -86,7 +88,7 @@ describe("game tile context menu", () => {
     expect(screen.queryByRole("menu")).toBeNull();
   });
 
-  it("shows exactly 5 menu items with correct labels in order", async () => {
+  it("shows exactly 6 menu items with correct labels in order", async () => {
     render(<App />);
     await screen.findByRole("button", { name: /Hades/ });
 
@@ -94,17 +96,22 @@ describe("game tile context menu", () => {
     fireEvent.contextMenu(tile, { clientX: 100, clientY: 100 });
 
     const menu = await screen.findByRole("menu", { name: "Game actions" });
-    const items = menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]');
+    const items = Array.from(
+      menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    );
 
-    expect(items).toHaveLength(5);
-    expect(items[0]).toHaveTextContent("Open details");
-    expect(items[1]).toHaveTextContent("Backup now");
-    expect(items[2]).toHaveTextContent("Restore latest…");
-    expect(items[3]).toHaveTextContent("Sync now");
-    expect(items[4]).toHaveTextContent("Remove from library…");
+    expect(items).toHaveLength(6);
+    expect(items.map((item) => item.textContent)).toEqual([
+      "Open details",
+      "Backup now",
+      "Restore latest…",
+      "Sync now",
+      "Fetch cover art",
+      "Remove from library…",
+    ]);
   });
 
-  it("applies danger styling to the last item and includes a separator", async () => {
+  it("applies danger styling to the remove item and includes a separator", async () => {
     render(<App />);
     await screen.findByRole("button", { name: /Hades/ });
 
@@ -112,10 +119,12 @@ describe("game tile context menu", () => {
     fireEvent.contextMenu(tile, { clientX: 100, clientY: 100 });
 
     const menu = await screen.findByRole("menu", { name: "Game actions" });
-    const items = menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]');
+    const removeItem = within(menu).getByRole("menuitem", {
+      name: "Remove from library…",
+    });
 
     // Last item has danger class
-    expect(items[4]).toHaveClass("menu-item-danger");
+    expect(removeItem).toHaveClass("menu-item-danger");
 
     // Separator exists
     const separator = menu.querySelector(".menu-separator");
@@ -130,8 +139,7 @@ describe("game tile context menu", () => {
     fireEvent.contextMenu(tile, { clientX: 100, clientY: 100 });
 
     const menu = await screen.findByRole("menu", { name: "Game actions" });
-    const menuItems = menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]');
-    const syncItem = menuItems[3]; // 4th item (0-indexed)
+    const syncItem = within(menu).getByRole("menuitem", { name: "Sync now" });
 
     expect(syncItem).toBeDisabled();
     expect(syncItem).toHaveAttribute("disabled", "");
@@ -147,8 +155,9 @@ describe("game tile context menu", () => {
     fireEvent.contextMenu(hollowKnightTile, { clientX: 100, clientY: 100 });
 
     const menu = await screen.findByRole("menu", { name: "Game actions" });
-    const menuItems = menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]');
-    const restoreItem = menuItems[2]; // 3rd item (0-indexed)
+    const restoreItem = within(menu).getByRole("menuitem", {
+      name: "Restore latest…",
+    });
 
     expect(restoreItem).toBeDisabled();
     expect(restoreItem).toHaveAttribute("disabled", "");
@@ -208,8 +217,9 @@ describe("game tile context menu", () => {
     fireEvent.contextMenu(tile, { clientX: 100, clientY: 100 });
 
     const menu = await screen.findByRole("menu", { name: "Game actions" });
-    const menuItems = menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]');
-    const removeItem = menuItems[4]; // 5th item (0-indexed)
+    const removeItem = within(menu).getByRole("menuitem", {
+      name: "Remove from library…",
+    });
 
     await userEvent.click(removeItem);
 
@@ -230,8 +240,9 @@ describe("game tile context menu", () => {
     fireEvent.contextMenu(tile, { clientX: 100, clientY: 100 });
 
     const menu = await screen.findByRole("menu", { name: "Game actions" });
-    const menuItems = menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]');
-    const openDetailsItem = menuItems[0]; // 1st item (0-indexed)
+    const openDetailsItem = within(menu).getByRole("menuitem", {
+      name: "Open details",
+    });
 
     await userEvent.click(openDetailsItem);
 
