@@ -21,7 +21,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::error::{Error, Result};
@@ -44,6 +44,14 @@ const PORTRAIT_DIMENSIONS: &str = "600x900";
 /// Aspect ratio preferred for a game tile (2:3).
 const TARGET_ASPECT_RATIO: f64 = 2.0 / 3.0;
 
+/// Upper bound on the candidates returned by [`SteamGridDbClient::list_grids`].
+///
+/// The picker loads one `<img>` per candidate directly from the CDN and the
+/// whole list crosses the IPC boundary, so an upstream response with hundreds
+/// of grids must not scale the modal's DOM or payload without limit. The cap
+/// only ever drops the worst-ranked tail; the head is unaffected.
+const MAX_CANDIDATES: usize = 60;
+
 const REJECTED_URL: &str = "SteamGridDB image URL rejected.";
 const OVERSIZE_IMAGE: &str = "SteamGridDB image exceeds the size limit.";
 const INVALID_IMAGE: &str = "SteamGridDB image is not a supported PNG, JPEG, or WebP file.";
@@ -55,8 +63,15 @@ const MALFORMED_RESPONSE: &str = "SteamGridDB returned an unreadable response.";
 /// Holds only public metadata; it never carries the API key. `width` and
 /// `height` are advisory ranking hints, so they may be zero when the response
 /// omits them.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Serialize`/`Deserialize` exist so the candidate can cross the IPC boundary
+/// with [`crate::engine::CoverSearch`]; nothing here is secret.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GridCandidate {
+    /// Upstream grid id. It is the only value a caller may hand back when
+    /// choosing a specific candidate, and it is used solely as a match key
+    /// against a freshly fetched list — never as a path or a URL component.
+    pub id: u64,
     pub url: String,
     pub width: u32,
     pub height: u32,
@@ -131,15 +146,33 @@ impl SteamGridDbClient {
 
     /// Pick the best portrait cover for a SteamGridDB game id.
     ///
-    /// Dimensions are advisory. When at least one entry reports usable
-    /// dimensions, the one whose aspect ratio is closest to 2:3 wins, breaking
-    /// ties by larger area. When no entry carries dimensions, ranking degrades
-    /// to the highest upstream `score`, breaking ties by the largest `id` so
-    /// the choice stays deterministic.
+    /// Equivalent to the first entry of [`Self::list_grids`], so an automatic
+    /// pick and a manual choice can never rank candidates differently.
     ///
-    /// Returns `Ok(None)` only when the response contains no entry with a
-    /// non-empty URL, or the API reports a `404`.
+    /// Returns `Ok(None)` only when the response contains no usable entry, or
+    /// the API reports a `404`.
     pub fn pick_grid(&self, api_key: &str, sgdb_game_id: u64) -> Result<Option<GridCandidate>> {
+        Ok(self.list_grids(api_key, sgdb_game_id)?.into_iter().next())
+    }
+
+    /// List every usable portrait cover for a SteamGridDB game id, best first.
+    ///
+    /// Same request as [`Self::pick_grid`]; this only keeps the whole ranked
+    /// list instead of the head. Entries are dropped when the URL is empty or
+    /// fails the download trust boundary ([`validate_grid_url`]) *before* they
+    /// reach the UI, so a thumbnail can never point at a host the download path
+    /// would refuse.
+    ///
+    /// Dimensions are advisory. Entries that report them rank first, closest
+    /// to 2:3 first and larger area breaking ties; entries without dimensions
+    /// follow, ranked by upstream `score` and then the largest `id`. The sort is
+    /// stable, so the head is byte-for-byte the entry [`Self::pick_grid`] has
+    /// always chosen.
+    ///
+    /// The returned list is capped at [`MAX_CANDIDATES`]: the picker renders
+    /// thumbnails straight from the CDN, so the payload is bounded rather than
+    /// proportional to however many grids upstream publishes.
+    pub fn list_grids(&self, api_key: &str, sgdb_game_id: u64) -> Result<Vec<GridCandidate>> {
         let url = grids_url(sgdb_game_id)?;
         let response = execute_with_retry(self.transport.as_ref(), &self.policy, || {
             authorized(HttpRequest::new(HttpMethod::Get, &url), api_key)
@@ -147,7 +180,7 @@ impl SteamGridDbClient {
         })?;
 
         if response.status == 404 {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         check_status(&response)?;
 
@@ -156,7 +189,7 @@ impl SteamGridDbClient {
         if !parsed.success {
             return Err(unsuccessful_response());
         }
-        Ok(best_grid(&parsed.data))
+        Ok(ranked_grids(&parsed.data))
     }
 
     /// Download a cover to `dest` atomically, returning the bytes written and
@@ -339,43 +372,61 @@ fn check_status(response: &HttpResponse) -> Result<()> {
     Ok(())
 }
 
-/// Rank candidate grids, preferring the aspect ratio closest to 2:3.
+/// Rank candidate grids best-first, preferring the aspect ratio closest to 2:3.
 ///
 /// Any entry with a URL is a usable fallback: dimensions are advisory upstream
-/// metadata, so an entry that omits them is still downloadable. When no entry
-/// reports dimensions, the highest `score` wins, with the largest `id` as a
-/// deterministic tie-break. URL safety is enforced later, before the download
-/// request is made.
-fn best_grid(entries: &[GridEntry]) -> Option<GridCandidate> {
-    let with_url = || entries.iter().filter(|entry| !entry.url.is_empty());
+/// metadata, so an entry that omits them is still downloadable. Entries whose
+/// URL fails [`validate_grid_url`] are removed here rather than offered to the
+/// UI or picked automatically: URL safety stays enforced at the download
+/// boundary, and the picker can never render a thumbnail for a rejected host.
+///
+/// The comparator is deliberately *not* a total order: entries that tie on the
+/// ranking keys keep their upstream order, and `sort_by` is stable, so
+/// `ranked[0]` is exactly the entry the pre-picker `best_grid` selected.
+fn ranked_grids(entries: &[GridEntry]) -> Vec<GridCandidate> {
+    let mut ranked: Vec<&GridEntry> = entries
+        .iter()
+        .filter(|entry| !entry.url.is_empty() && validate_grid_url(&entry.url).is_ok())
+        .collect();
 
-    let best = with_url()
-        .filter(|entry| entry.width > 0 && entry.height > 0)
-        .min_by(|left, right| {
-            let left_ratio =
-                (f64::from(left.width) / f64::from(left.height) - TARGET_ASPECT_RATIO).abs();
-            let right_ratio =
-                (f64::from(right.width) / f64::from(right.height) - TARGET_ASPECT_RATIO).abs();
-            left_ratio.total_cmp(&right_ratio).then_with(|| {
-                let left_area = u64::from(left.width) * u64::from(left.height);
-                let right_area = u64::from(right.width) * u64::from(right.height);
-                right_area.cmp(&left_area)
-            })
+    ranked.sort_by(
+        |left, right| match (aspect_distance(left), aspect_distance(right)) {
+            (Some(left_ratio), Some(right_ratio)) => left_ratio
+                .total_cmp(&right_ratio)
+                .then_with(|| area(right).cmp(&area(left))),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => right
+                .score
+                .total_cmp(&left.score)
+                .then_with(|| right.id.cmp(&left.id)),
+        },
+    );
+
+    ranked
+        .into_iter()
+        .take(MAX_CANDIDATES)
+        .map(|entry| GridCandidate {
+            id: entry.id,
+            url: entry.url.clone(),
+            width: entry.width,
+            height: entry.height,
+            mime: entry.mime.clone(),
         })
-        .or_else(|| {
-            with_url().max_by(|left, right| {
-                left.score
-                    .total_cmp(&right.score)
-                    .then_with(|| left.id.cmp(&right.id))
-            })
-        });
+        .collect()
+}
 
-    best.map(|entry| GridCandidate {
-        url: entry.url.clone(),
-        width: entry.width,
-        height: entry.height,
-        mime: entry.mime.clone(),
-    })
+/// Distance between an entry's aspect ratio and 2:3, or `None` when the entry
+/// reports no usable dimensions.
+fn aspect_distance(entry: &GridEntry) -> Option<f64> {
+    if entry.width == 0 || entry.height == 0 {
+        return None;
+    }
+    Some((f64::from(entry.width) / f64::from(entry.height) - TARGET_ASPECT_RATIO).abs())
+}
+
+fn area(entry: &GridEntry) -> u64 {
+    u64::from(entry.width) * u64::from(entry.height)
 }
 
 /// Enforce the download trust boundary before a request is made.
@@ -610,6 +661,7 @@ mod tests {
 
     fn candidate(url: &str) -> GridCandidate {
         GridCandidate {
+            id: 1,
             url: url.to_string(),
             width: 600,
             height: 900,
@@ -786,6 +838,182 @@ mod tests {
             "https://cdn2.steamgriddb.com/grid/tie-high-id.png"
         );
         assert_eq!((picked.width, picked.height), (0, 0));
+    }
+
+    /// A ranked list keeps every usable entry, best first, and carries the
+    /// upstream id so the picker can hand a specific choice back.
+    #[test]
+    fn list_grids_ranks_best_first_with_ids() {
+        let (client, _) = client(vec![json_response(
+            200,
+            json!({
+                "success": true,
+                "data": [
+                    {
+                        "id": 1,
+                        "url": "https://cdn2.steamgriddb.com/grid/wide.png",
+                        "width": 1920,
+                        "height": 1080,
+                        "mime": "image/png"
+                    },
+                    {
+                        "id": 2,
+                        "url": "https://cdn2.steamgriddb.com/grid/portrait.png",
+                        "width": 600,
+                        "height": 900,
+                        "mime": "image/png"
+                    },
+                    {
+                        "id": 3,
+                        "url": "https://cdn2.steamgriddb.com/grid/near.png",
+                        "width": 700,
+                        "height": 900,
+                        "mime": "image/png"
+                    },
+                    {
+                        "id": 4,
+                        "url": "https://cdn2.steamgriddb.com/grid/unknown.png",
+                        "score": 0.9
+                    }
+                ]
+            }),
+        )]);
+
+        let listed = client.list_grids("key", 7).unwrap();
+        let ids: Vec<u64> = listed.iter().map(|candidate| candidate.id).collect();
+        assert_eq!(ids, vec![2, 3, 1, 4]);
+        assert_eq!(
+            listed[0].url,
+            "https://cdn2.steamgriddb.com/grid/portrait.png"
+        );
+        // Ranking metadata survives the conversion to the IPC shape.
+        assert_eq!((listed[0].width, listed[0].height), (600, 900));
+        assert_eq!(listed[0].mime, "image/png");
+        assert_eq!((listed[3].width, listed[3].height), (0, 0));
+    }
+
+    /// A candidate the download path would refuse must never reach the picker,
+    /// where it would render as a broken or attacker-chosen thumbnail.
+    #[test]
+    fn list_grids_drops_empty_and_rejected_urls() {
+        let (client, _) = client(vec![json_response(
+            200,
+            json!({
+                "success": true,
+                "data": [
+                    {
+                        "id": 1,
+                        "url": "https://evil.example.com/grid/cover.png",
+                        "width": 600,
+                        "height": 900
+                    },
+                    {
+                        "id": 2,
+                        "url": "https://cdn2.steamgriddb.com/grid/cover.png",
+                        "width": 600,
+                        "height": 900
+                    },
+                    {
+                        "id": 3,
+                        "url": "",
+                        "width": 600,
+                        "height": 900
+                    },
+                    {
+                        "id": 4,
+                        "url": "http://cdn2.steamgriddb.com/grid/plain-http.png",
+                        "width": 600,
+                        "height": 900
+                    }
+                ]
+            }),
+        )]);
+
+        let listed = client.list_grids("key", 7).unwrap();
+        let ids: Vec<u64> = listed.iter().map(|candidate| candidate.id).collect();
+        assert_eq!(ids, vec![2], "only the allowlisted https URL may survive");
+    }
+
+    /// The modal renders one `<img>` and one IPC record per candidate, so the
+    /// list is bounded rather than proportional to whatever upstream publishes.
+    #[test]
+    fn list_grids_is_capped_at_the_candidate_limit() {
+        let overflow = MAX_CANDIDATES + 5;
+        let entries: Vec<Value> = (0..overflow)
+            .map(|index| {
+                json!({
+                    "id": index,
+                    "url": format!("https://cdn2.steamgriddb.com/grid/{index}.png"),
+                    // Every step moves further from 2:3, so the ranking order is
+                    // the input order and the dropped tail is unambiguous.
+                    "width": 600 + index as u32,
+                    "height": 900,
+                    "mime": "image/png"
+                })
+            })
+            .collect();
+        let (client, _) = client(vec![json_response(
+            200,
+            json!({"success": true, "data": entries}),
+        )]);
+
+        let listed = client.list_grids("key", 7).unwrap();
+        assert_eq!(listed.len(), MAX_CANDIDATES);
+        assert_eq!(listed.first().map(|candidate| candidate.id), Some(0));
+        assert_eq!(
+            listed.last().map(|candidate| candidate.id),
+            Some(MAX_CANDIDATES as u64 - 1)
+        );
+    }
+
+    /// A game with no grids is an empty picker, not an error.
+    #[test]
+    fn list_grids_returns_empty_on_404() {
+        let (client, _) = client(vec![json_response(
+            404,
+            json!({"success": false, "errors": ["not found"]}),
+        )]);
+
+        assert!(client.list_grids("key", 7).unwrap().is_empty());
+    }
+
+    /// The automatic pick must stay byte-for-byte the head of the manual list,
+    /// or the picker would silently disagree with "Fetch cover art".
+    #[test]
+    fn pick_grid_is_the_head_of_list_grids() {
+        let payload = json!({
+            "success": true,
+            "data": [
+                {
+                    "id": 5,
+                    "url": "https://cdn2.steamgriddb.com/grid/low.png",
+                    "score": 0.2
+                },
+                {
+                    "id": 9,
+                    "url": "https://cdn2.steamgriddb.com/grid/tie-low-id.png",
+                    "score": 0.8
+                },
+                {
+                    "id": 12,
+                    "url": "https://cdn2.steamgriddb.com/grid/tie-high-id.png",
+                    "score": 0.8
+                }
+            ]
+        });
+        let (client, _) = client(vec![
+            json_response(200, payload.clone()),
+            json_response(200, payload),
+        ]);
+
+        let head = client
+            .list_grids("key", 7)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        let picked = client.pick_grid("key", 7).unwrap().unwrap();
+        assert_eq!(picked, head);
     }
 
     #[test]

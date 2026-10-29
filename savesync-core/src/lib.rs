@@ -41,7 +41,7 @@ pub mod watcher;
 pub use artwork::{GridCandidate, MAX_GRID_BYTES, SteamGridDbClient};
 pub use credentials::{KeyringTokenStore, MemoryTokenStore, TokenStore};
 pub use discovery::{DiscoveredGame, DiscoverySource};
-pub use engine::SaveSyncEngine;
+pub use engine::{CoverSearch, GRID_UNAVAILABLE_MESSAGE, SaveSyncEngine};
 pub use error::{Error, Result};
 pub use google_drive::GoogleDriveProvider;
 pub use http::{HttpTransport, ReqwestTransport, RetryPolicy};

@@ -7,7 +7,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::artwork::SteamGridDbClient;
+use serde::{Deserialize, Serialize};
+
+use crate::artwork::{GridCandidate, SteamGridDbClient};
 use crate::blob::BlobStore;
 use crate::db::Db;
 use crate::error::{Error, Result};
@@ -28,6 +30,27 @@ const DEVICE_ID_KEY: &str = "device_id";
 /// Image formats a cached cover may use, in the order they are tried when
 /// pruning a stale file left by a previous fetch.
 const COVER_EXTENSIONS: [&str; 3] = ["png", "jpg", "webp"];
+
+/// Error message used when the manually chosen grid is no longer offered by
+/// SteamGridDB.
+///
+/// Exposed so the command layer can map exactly this failure onto a "that cover
+/// is gone, pick another" message instead of a generic provider error. It is a
+/// plain string because [`Error::NotFound`] carries one; no grid id, URL, or
+/// title is included.
+pub const GRID_UNAVAILABLE_MESSAGE: &str = "the selected cover is no longer available";
+
+/// A SteamGridDB match together with the cover candidates offered for it.
+///
+/// `candidates` is ranked best first and may be empty when the matched game has
+/// no usable grids. `sgdb_game_id` is carried only so a caller can tell which
+/// game the list belongs to; a manual pick is matched by
+/// [`GridCandidate::id`], never by position.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoverSearch {
+    pub sgdb_game_id: u64,
+    pub candidates: Vec<GridCandidate>,
+}
 
 /// The SaveSync core engine.
 pub struct SaveSyncEngine {
@@ -197,6 +220,10 @@ impl SaveSyncEngine {
 
     /// Fetch, validate and cache cover art for a game, then record it.
     ///
+    /// The automatic pick is the head of [`Self::search_cover_candidates`], so
+    /// it can never rank candidates differently from the manual picker, and
+    /// both paths share the same download-and-record step.
+    ///
     /// On any failure the previously recorded cover is left untouched: the
     /// database value only changes after a complete, verified image is on
     /// disk.
@@ -206,53 +233,100 @@ impl SaveSyncEngine {
         api_key: &str,
         game_id: &str,
     ) -> Result<Game> {
-        // The game id becomes a file name, so it is validated before any
-        // database lookup and before any network request.
-        let stem = cover_stem(game_id)?;
+        let candidate = self
+            .search_cover_candidates(client, api_key, game_id)?
+            .ok_or_else(|| Error::NotFound("no SteamGridDB match for this title".into()))?
+            .candidates
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::NotFound("no cover art available for this game".into()))?;
+
+        self.cache_cover(client, api_key, game_id, &candidate)
+    }
+
+    /// Read the SteamGridDB search term for a game: its recorded title.
+    ///
+    /// This is the only part of a cover search that needs engine state, so it
+    /// is deliberately split out from [`Self::search_cover_candidates`]: a
+    /// caller that does not already own the engine lock can take it for this
+    /// brief database read, release it, and then run the two API requests
+    /// through [`cover_candidates_for_title`] without blocking every other
+    /// engine command behind a 60-second network timeout.
+    ///
+    /// No network request, cache write, or download happens here. Returns
+    /// `Ok(None)` when the game is unknown, or when its stored title is blank:
+    /// an empty autocomplete query can never match a game, so it is never sent
+    /// upstream.
+    pub fn cover_search_term(&mut self, game_id: &str) -> Result<Option<String>> {
+        // Parity with the download path: an id that could never name a cover
+        // file is rejected before it is used as a lookup key.
+        cover_stem(game_id)?;
+
+        Ok(store::get_game(self.db.connection(), game_id)?
+            .map(|game| game.title.trim().to_string())
+            .filter(|title| !title.is_empty()))
+    }
+
+    /// List the cover candidates SteamGridDB offers for an enrolled game.
+    ///
+    /// Returns `Ok(None)` when the game is unknown, when its title is blank, or
+    /// when the title has no SteamGridDB match at all; `Ok(Some(search))`
+    /// otherwise, whose `candidates` may still be empty when the matched game
+    /// has no usable grids.
+    ///
+    /// This performs the same two API calls as [`Self::fetch_cover_art`] and
+    /// downloads nothing: no image is fetched, no cache file is written, and
+    /// the recorded cover is untouched.
+    ///
+    /// Callers that do not already hold the engine lock should use
+    /// [`Self::cover_search_term`] plus [`cover_candidates_for_title`] instead,
+    /// so the network I/O runs while the lock is released.
+    pub fn search_cover_candidates(
+        &mut self,
+        client: &SteamGridDbClient,
+        api_key: &str,
+        game_id: &str,
+    ) -> Result<Option<CoverSearch>> {
+        let Some(title) = self.cover_search_term(game_id)? else {
+            return Ok(None);
+        };
+        cover_candidates_for_title(client, api_key, &title)
+    }
+
+    /// Download and record one specific cover candidate chosen by the user.
+    ///
+    /// `grid_id` is used *only* to look the candidate up in a freshly fetched
+    /// list: the download URL always comes from SteamGridDB, never from the
+    /// caller, so a stale, guessed, or hostile id cannot redirect the request
+    /// or reach a file name.
+    ///
+    /// Fails with [`Error::NotFound`] carrying [`GRID_UNAVAILABLE_MESSAGE`] when
+    /// the id is no longer offered. As with [`Self::fetch_cover_art`], any
+    /// failure leaves the previously recorded cover in place.
+    pub fn set_cover_grid(
+        &mut self,
+        client: &SteamGridDbClient,
+        api_key: &str,
+        game_id: &str,
+        grid_id: u64,
+    ) -> Result<Game> {
+        cover_stem(game_id)?;
 
         let game = store::require_game(self.db.connection(), game_id)?;
 
         let sgdb_id = client
             .search_game(api_key, &game.title)?
             .ok_or_else(|| Error::NotFound("no SteamGridDB match for this title".into()))?;
-        let candidate = client
-            .pick_grid(api_key, sgdb_id)?
-            .ok_or_else(|| Error::NotFound("no cover art available for this game".into()))?;
+        let candidates = client.list_grids(api_key, sgdb_id)?;
 
-        // The final name depends on the image's own signature, which is only
-        // known after the download, so the completed file lands on a staging
-        // name inside the cache first and is then moved to `covers/<id>.<ext>`.
-        let staging = self.paths.covers().join(format!("{stem}.download"));
+        // Match by id, not by rank: an explicit choice overrides the automatic
+        // one, even when the user picks a worse-ranked grid on purpose.
+        let candidate = candidates
+            .iter()
+            .find(|candidate| candidate.id == grid_id)
+            .ok_or_else(|| Error::NotFound(GRID_UNAVAILABLE_MESSAGE.to_string()))?;
 
-        // Validates the CDN URL host and scheme, caps the size, sniffs the
-        // magic bytes, and writes through `.part` + rename. Nothing here
-        // re-implements any of that.
-        let downloaded = client.download_grid(api_key, &candidate, &staging)?;
-        let extension = downloaded.extension;
-
-        let dest = self.paths.covers().join(format!("{stem}.{extension}"));
-        if let Err(error) = crate::artwork::rename_over(&staging, &dest) {
-            let _ = fs::remove_file(&staging);
-            return Err(error);
-        }
-
-        let relative = format!("covers/{stem}.{extension}");
-        let updated = self.db.transaction(|tx| {
-            store::set_cover_path(tx, game_id, Some(&relative))?;
-            store::require_game(tx, game_id)
-        })?;
-
-        // A re-fetch may have produced a different format; drop the stale
-        // variant so the cache holds exactly one file per game. A failed
-        // deletion is harmless: an orphaned cache file is never read and is
-        // never inside a save location.
-        for other in COVER_EXTENSIONS {
-            if other != extension {
-                let _ = fs::remove_file(self.paths.covers().join(format!("{stem}.{other}")));
-            }
-        }
-
-        Ok(updated)
+        self.cache_cover(client, api_key, game_id, candidate)
     }
 
     /// Clear a game's cover: clear the recorded path, then best-effort delete
@@ -576,6 +650,64 @@ impl SaveSyncEngine {
         )
     }
 
+    /// Download `candidate` into the cover cache, record it, and prune stale
+    /// formats.
+    ///
+    /// The single write path for cover art: the automatic pick and the manual
+    /// pick both end here, so their atomicity, cleanup, and error behavior
+    /// cannot drift apart.
+    ///
+    /// The database value only changes after a complete, signature-checked
+    /// image is on disk, so a failure at any point — network, size, magic-byte
+    /// sniff, rename, or the transaction itself — leaves the previously
+    /// recorded cover exactly as it was.
+    fn cache_cover(
+        &mut self,
+        client: &SteamGridDbClient,
+        api_key: &str,
+        game_id: &str,
+        candidate: &GridCandidate,
+    ) -> Result<Game> {
+        // Re-validate here too: this is the only place that turns a game id
+        // into a path component, and it must stay safe regardless of caller.
+        let stem = cover_stem(game_id)?;
+
+        // The final name depends on the image's own signature, which is only
+        // known after the download, so the completed file lands on a staging
+        // name inside the cache first and is then moved to `covers/<id>.<ext>`.
+        let staging = self.paths.covers().join(format!("{stem}.download"));
+
+        // Validates the CDN URL host and scheme, caps the size, sniffs the
+        // magic bytes, and writes through `.part` + rename. Nothing here
+        // re-implements any of that.
+        let downloaded = client.download_grid(api_key, candidate, &staging)?;
+        let extension = downloaded.extension;
+
+        let dest = self.paths.covers().join(format!("{stem}.{extension}"));
+        if let Err(error) = crate::artwork::rename_over(&staging, &dest) {
+            let _ = fs::remove_file(&staging);
+            return Err(error);
+        }
+
+        let relative = format!("covers/{stem}.{extension}");
+        let updated = self.db.transaction(|tx| {
+            store::set_cover_path(tx, game_id, Some(&relative))?;
+            store::require_game(tx, game_id)
+        })?;
+
+        // A switch may have produced a different format; drop the stale
+        // variant so the cache holds exactly one file per game. A failed
+        // deletion is harmless: an orphaned cache file is never read and is
+        // never inside a save location.
+        for other in COVER_EXTENSIONS {
+            if other != extension {
+                let _ = fs::remove_file(self.paths.covers().join(format!("{stem}.{other}")));
+            }
+        }
+
+        Ok(updated)
+    }
+
     fn single_directory_location(&self, game_id: &str) -> Result<Location> {
         let locations = store::list_locations(self.db.connection(), game_id)?;
         match locations.as_slice() {
@@ -593,6 +725,31 @@ impl SaveSyncEngine {
             ))),
         }
     }
+}
+
+/// Resolve a title into the ranked cover candidates SteamGridDB offers for it.
+///
+/// Pure network composition over a [`SteamGridDbClient`]: it reads no engine
+/// state, downloads nothing, and writes nothing, so a caller must not hold the
+/// engine lock across it. That is what lets the command layer keep the lock for
+/// the local title lookup alone ([`SaveSyncEngine::cover_search_term`]) and run
+/// these two requests — each with a timeout and a bounded retry policy — with
+/// the lock released.
+///
+/// Returns `Ok(None)` when the title has no match at all.
+pub fn cover_candidates_for_title(
+    client: &SteamGridDbClient,
+    api_key: &str,
+    title: &str,
+) -> Result<Option<CoverSearch>> {
+    let Some(sgdb_game_id) = client.search_game(api_key, title)? else {
+        return Ok(None);
+    };
+    let candidates = client.list_grids(api_key, sgdb_game_id)?;
+    Ok(Some(CoverSearch {
+        sgdb_game_id,
+        candidates,
+    }))
 }
 
 /// Validate that a game id can safely be used as a file name.
@@ -636,4 +793,395 @@ fn load_or_create_device(db: &mut Db) -> Result<Device> {
         store::set_setting(tx, DEVICE_ID_KEY, &device.id)
     })?;
     Ok(device)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+
+    use serde_json::{Value, json};
+
+    use crate::http::{HttpRequest, HttpResponse, HttpTransport};
+
+    /// Stand-in credential: these tests assert it never reaches the CDN and
+    /// never appears in an error.
+    const API_KEY: &str = "sgdb-test-key-never-echoed";
+
+    /// Real PNG signature; the download path validates magic bytes, not pixels.
+    const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+
+    fn png_payload(tag: u8) -> Vec<u8> {
+        let mut bytes = PNG_SIGNATURE.to_vec();
+        bytes.push(tag);
+        bytes
+    }
+
+    fn jpeg_payload(tag: u8) -> Vec<u8> {
+        let mut bytes = vec![0xFF, 0xD8, 0xFF, 0xE0];
+        bytes.push(tag);
+        bytes
+    }
+
+    /// Zero-network transport. Mirrors `ReqwestTransport` by streaming the body
+    /// to `download_to` instead of buffering it in the response.
+    struct ScriptedTransport {
+        responses: Mutex<VecDeque<HttpResponse>>,
+    }
+
+    impl ScriptedTransport {
+        fn new(responses: Vec<HttpResponse>) -> Self {
+            Self {
+                responses: Mutex::new(responses.into()),
+            }
+        }
+    }
+
+    impl HttpTransport for ScriptedTransport {
+        fn execute(&self, request: &HttpRequest) -> Result<HttpResponse> {
+            let response = self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or_else(|| Error::Network("no scripted response".to_string()))?;
+
+            if let Some(path) = &request.download_to {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).unwrap();
+                }
+                fs::write(path, &response.body).unwrap();
+            }
+
+            Ok(response)
+        }
+    }
+
+    fn json_response(status: u16, value: Value) -> HttpResponse {
+        HttpResponse {
+            status,
+            headers: vec![("Content-Type".to_string(), "application/json".to_string())],
+            body: serde_json::to_vec(&value).unwrap(),
+        }
+    }
+
+    fn image_response(bytes: &[u8]) -> HttpResponse {
+        HttpResponse {
+            status: 200,
+            headers: vec![("Content-Type".to_string(), "image/png".to_string())],
+            body: bytes.to_vec(),
+        }
+    }
+
+    fn autocomplete_hit() -> HttpResponse {
+        json_response(
+            200,
+            json!({"success": true, "data": [{"id": 7, "name": "Hades"}]}),
+        )
+    }
+
+    /// Two candidates, ranked best first: id 10 (2:3) then id 20 (wide). The
+    /// ids are what a manual pick is matched against.
+    fn two_grids() -> HttpResponse {
+        json_response(
+            200,
+            json!({
+                "success": true,
+                "data": [{
+                    "id": 10,
+                    "url": "https://cdn2.steamgriddb.com/grid/best.png",
+                    "width": 600,
+                    "height": 900,
+                    "mime": "image/png"
+                }, {
+                    "id": 20,
+                    "url": "https://cdn2.steamgriddb.com/grid/wide.png",
+                    "width": 1920,
+                    "height": 1080,
+                    "mime": "image/png"
+                }]
+            }),
+        )
+    }
+
+    struct Fixture {
+        _temp: tempfile::TempDir,
+        engine: SaveSyncEngine,
+        game: Game,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let temp = tempfile::tempdir().unwrap();
+            let mut engine = SaveSyncEngine::open(temp.path().join("data")).unwrap();
+            let game = engine
+                .enroll_game("Hades", AdapterType::CustomDirectory)
+                .unwrap();
+            Self {
+                _temp: temp,
+                engine,
+                game,
+            }
+        }
+
+        fn client(responses: Vec<HttpResponse>) -> SteamGridDbClient {
+            SteamGridDbClient::new(Arc::new(ScriptedTransport::new(responses)))
+        }
+
+        fn cached_entries(&self) -> Vec<String> {
+            let mut names: Vec<String> = fs::read_dir(self.engine.covers_dir())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        }
+    }
+
+    /// The split that keeps network I/O off the engine lock: the term lookup is
+    /// a pure database read of the enrolled title.
+    #[test]
+    fn cover_search_term_reads_the_enrolled_title() {
+        let mut fixture = Fixture::new();
+
+        assert_eq!(
+            fixture
+                .engine
+                .cover_search_term(&fixture.game.id)
+                .unwrap()
+                .as_deref(),
+            Some("Hades")
+        );
+    }
+
+    /// An unknown game is "no search term", not an error: the command layer
+    /// still answers the picker with `Ok(None)` and never contacts the network.
+    #[test]
+    fn cover_search_term_is_none_for_an_unknown_game() {
+        let mut fixture = Fixture::new();
+
+        assert!(
+            fixture
+                .engine
+                .cover_search_term("not-an-enrolled-game")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// The schema allows a title that was written outside `create_game` (an
+    /// older build, or a hand-edited database), so a blank one must be treated
+    /// as "nothing to search for" rather than sent upstream as an empty query.
+    #[test]
+    fn cover_search_term_is_none_for_a_blank_title() {
+        let mut fixture = Fixture::new();
+        let blank = "   ".to_string();
+        fixture
+            .engine
+            .db
+            .connection()
+            .execute(
+                "UPDATE games SET title = ?1 WHERE id = ?2",
+                (&blank, &fixture.game.id),
+            )
+            .unwrap();
+
+        assert!(
+            fixture
+                .engine
+                .cover_search_term(&fixture.game.id)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// Parity with the download path: an id that could never name a cover file
+    /// is still rejected before it becomes a lookup key.
+    #[test]
+    fn cover_search_term_rejects_an_id_that_cannot_name_a_cover_file() {
+        let mut fixture = Fixture::new();
+
+        let error = fixture.engine.cover_search_term("../escape").unwrap_err();
+
+        assert!(
+            matches!(error, Error::InvalidState(_)),
+            "expected an invalid-state error, got {error:?}"
+        );
+    }
+
+    /// The whole search is `term` + two requests. An unknown game must stop
+    /// after the term lookup: the empty scripted transport fails on any request,
+    /// so `Ok(None)` proves nothing was sent.
+    #[test]
+    fn search_cover_candidates_never_contacts_the_network_for_an_unknown_game() {
+        let mut fixture = Fixture::new();
+        let client = Fixture::client(Vec::new());
+
+        assert!(
+            fixture
+                .engine
+                .search_cover_candidates(&client, API_KEY, "not-an-enrolled-game")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// An unknown title is "no match", not a failure: the picker shows its
+    /// empty state instead of an error banner.
+    #[test]
+    fn search_cover_candidates_returns_none_when_the_game_is_unknown() {
+        let mut fixture = Fixture::new();
+        let client = Fixture::client(vec![json_response(
+            200,
+            json!({"success": true, "data": []}),
+        )]);
+
+        let search = fixture
+            .engine
+            .search_cover_candidates(&client, API_KEY, &fixture.game.id)
+            .unwrap();
+
+        assert!(search.is_none());
+        assert!(
+            fixture.cached_entries().is_empty(),
+            "a search must write nothing"
+        );
+    }
+
+    /// This is the picker's data source: the matched game id plus the ranked
+    /// candidates, and nothing downloaded.
+    #[test]
+    fn search_cover_candidates_lists_ranked_candidates_without_downloading() {
+        let mut fixture = Fixture::new();
+        let client = Fixture::client(vec![autocomplete_hit(), two_grids()]);
+
+        let search = fixture
+            .engine
+            .search_cover_candidates(&client, API_KEY, &fixture.game.id)
+            .unwrap()
+            .expect("Hades matches");
+
+        assert_eq!(search.sgdb_game_id, 7);
+        let ids: Vec<u64> = search
+            .candidates
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect();
+        assert_eq!(ids, vec![10, 20]);
+        assert!(
+            fixture.cached_entries().is_empty(),
+            "a search must write nothing"
+        );
+        assert_eq!(
+            fixture
+                .engine
+                .get_game(&fixture.game.id)
+                .unwrap()
+                .cover_path,
+            None
+        );
+    }
+
+    /// A manual pick overrides the ranking: the *requested* grid is downloaded,
+    /// which the distinct payload proves, and it is recorded.
+    #[test]
+    fn set_cover_grid_downloads_the_requested_grid_not_the_best_ranked() {
+        let mut fixture = Fixture::new();
+        let best = png_payload(1);
+        let chosen = png_payload(2);
+        let client = Fixture::client(vec![
+            autocomplete_hit(),
+            two_grids(),
+            image_response(&chosen),
+        ]);
+
+        let updated = fixture
+            .engine
+            .set_cover_grid(&client, API_KEY, &fixture.game.id, 20)
+            .unwrap();
+
+        let name = format!("{}.png", fixture.game.id);
+        assert_eq!(
+            updated.cover_path.as_deref(),
+            Some(format!("covers/{name}").as_str())
+        );
+        assert_eq!(
+            fs::read(fixture.engine.covers_dir().join(&name)).unwrap(),
+            chosen
+        );
+        assert_ne!(
+            fs::read(fixture.engine.covers_dir().join(&name)).unwrap(),
+            best
+        );
+        assert_eq!(fixture.cached_entries(), vec![name]);
+    }
+
+    /// Switching formats must not leave the previous extension behind: the
+    /// cache holds exactly one file per game, and the record follows the bytes.
+    #[test]
+    fn set_cover_grid_prunes_the_previous_extension() {
+        let mut fixture = Fixture::new();
+        let client = Fixture::client(vec![
+            autocomplete_hit(),
+            two_grids(),
+            image_response(&png_payload(3)),
+            autocomplete_hit(),
+            two_grids(),
+            image_response(&jpeg_payload(4)),
+        ]);
+
+        fixture
+            .engine
+            .set_cover_grid(&client, API_KEY, &fixture.game.id, 10)
+            .unwrap();
+        let updated = fixture
+            .engine
+            .set_cover_grid(&client, API_KEY, &fixture.game.id, 20)
+            .unwrap();
+
+        let name = format!("{}.jpg", fixture.game.id);
+        assert_eq!(
+            updated.cover_path.as_deref(),
+            Some(format!("covers/{name}").as_str())
+        );
+        assert_eq!(fixture.cached_entries(), vec![name]);
+        assert!(
+            fs::read(
+                fixture
+                    .engine
+                    .covers_dir()
+                    .join(format!("{}.png", fixture.game.id))
+            )
+            .is_err()
+        );
+    }
+
+    /// A grid id that upstream no longer offers is a distinguishable failure and
+    /// changes nothing on disk or in the database.
+    #[test]
+    fn set_cover_grid_reports_a_grid_that_is_gone() {
+        let mut fixture = Fixture::new();
+        let client = Fixture::client(vec![autocomplete_hit(), two_grids()]);
+
+        let error = fixture
+            .engine
+            .set_cover_grid(&client, API_KEY, &fixture.game.id, 999)
+            .unwrap_err();
+
+        assert!(
+            matches!(&error, Error::NotFound(message) if message.as_str() == GRID_UNAVAILABLE_MESSAGE),
+            "expected the grid-gone error, got {error:?}"
+        );
+        assert!(!format!("{error}").contains(API_KEY));
+        assert!(fixture.cached_entries().is_empty());
+        assert_eq!(
+            fixture
+                .engine
+                .get_game(&fixture.game.id)
+                .unwrap()
+                .cover_path,
+            None
+        );
+    }
 }
