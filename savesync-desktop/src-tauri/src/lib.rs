@@ -12,9 +12,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use savesync_core::{
-    AdapterType, Conflict, DiscoveredGame, Game, GoogleDriveProvider, HttpTransport,
-    KeyringTokenStore, MemoryTokenStore, OAuthConfig, OAuthFlow, ReqwestTransport, RestoreReport,
-    Revision, SaveSyncEngine, SaveWatcher, SnapshotInfo, SteamGridDbClient, SyncReport, TokenStore,
+    AdapterType, Conflict, CoverSearch, DiscoveredGame, GRID_UNAVAILABLE_MESSAGE, Game,
+    GoogleDriveProvider, HttpTransport, KeyringTokenStore, MemoryTokenStore, OAuthConfig,
+    OAuthFlow, ReqwestTransport, RestoreReport, Revision, SaveSyncEngine, SaveWatcher,
+    SnapshotInfo, SteamGridDbClient, SyncReport, TokenStore,
 };
 use serde::Serialize;
 use std::path::Path;
@@ -534,6 +535,39 @@ async fn fetch_cover_art(
         .map_err(|error| format!("artwork task failed: {error}"))?
 }
 
+/// List the cover candidates SteamGridDB offers for an enrolled game, ranked
+/// best first.
+///
+/// `None` means the title has no SteamGridDB match at all; `Some` may still
+/// carry an empty `candidates` list. Nothing is downloaded, so the picker can
+/// open without touching the cached cover.
+#[tauri::command(rename_all = "snake_case")]
+async fn search_cover_candidates(
+    state: tauri::State<'_, AppState>,
+    game_id: String,
+) -> Result<Option<CoverSearch>, String> {
+    let inner = state.inner.clone();
+    tauri::async_runtime::spawn_blocking(move || inner.search_cover_candidates(&game_id))
+        .await
+        .map_err(|error| format!("artwork task failed: {error}"))?
+}
+
+/// Download and record one user-chosen cover candidate.
+///
+/// `grid_id` is only a match key against a freshly fetched list; the download
+/// URL always comes from SteamGridDB, never from the caller.
+#[tauri::command(rename_all = "snake_case")]
+async fn set_cover_grid(
+    state: tauri::State<'_, AppState>,
+    game_id: String,
+    grid_id: u64,
+) -> Result<Game, String> {
+    let inner = state.inner.clone();
+    tauri::async_runtime::spawn_blocking(move || inner.set_cover_grid(&game_id, grid_id))
+        .await
+        .map_err(|error| format!("artwork task failed: {error}"))?
+}
+
 #[tauri::command(rename_all = "snake_case")]
 async fn clear_cover_art(
     state: tauri::State<'_, AppState>,
@@ -644,6 +678,62 @@ impl Inner {
     /// `fetch_cover_art` performs network I/O and hashes/writes an image, so the
     /// command layer calls this from a blocking task.
     fn fetch_cover_art(&self, game_id: &str) -> Result<Game, String> {
+        self.with_cover_client(|client, api_key| {
+            let mut engine = self.engine.lock().map_err(lock_error)?;
+            engine
+                .fetch_cover_art(client, api_key, game_id)
+                .map_err(|error| cover_fetch_error(&error))
+        })
+    }
+
+    /// List cover candidates for one game. Downloads nothing.
+    ///
+    /// The engine lock is held for the local title lookup only. Both API
+    /// requests below are network I/O with a timeout and a bounded retry
+    /// policy, so they deliberately run with the lock released: making the
+    /// picker wait on SteamGridDB must never stall every other engine command.
+    fn search_cover_candidates(&self, game_id: &str) -> Result<Option<CoverSearch>, String> {
+        self.with_cover_client(|client, api_key| {
+            // Scoped so the guard is dropped at the end of this block, before
+            // any request is made.
+            let title = {
+                let mut engine = self.engine.lock().map_err(lock_error)?;
+                engine
+                    .cover_search_term(game_id)
+                    .map_err(|error| cover_fetch_error(&error))?
+            };
+
+            // No game, or no usable title: the picker shows its empty state.
+            let Some(title) = title else {
+                return Ok(None);
+            };
+
+            savesync_core::engine::cover_candidates_for_title(client, api_key, &title)
+                .map_err(|error| cover_fetch_error(&error))
+        })
+    }
+
+    /// Download and record one explicitly chosen cover candidate.
+    fn set_cover_grid(&self, game_id: &str, grid_id: u64) -> Result<Game, String> {
+        self.with_cover_client(|client, api_key| {
+            let mut engine = self.engine.lock().map_err(lock_error)?;
+            engine
+                .set_cover_grid(client, api_key, game_id, grid_id)
+                .map_err(|error| cover_fetch_error(&error))
+        })
+    }
+
+    /// Run `action` with a ready artwork client and the keyring-held API key.
+    ///
+    /// The key is read inside the blocking task, never cloned into shared
+    /// state, and scrubbed on every path out of this function, including a
+    /// panic-free early return. The action receives it only to attach the
+    /// bearer header to API requests; the CDN request inside the core client
+    /// deliberately never carries it.
+    fn with_cover_client<T>(
+        &self,
+        action: impl FnOnce(&SteamGridDbClient, &str) -> Result<T, String>,
+    ) -> Result<T, String> {
         let mut api_key = self
             .artwork_credentials
             .load()
@@ -651,14 +741,11 @@ impl Inner {
             .map_err(|_| "Could not read the SteamGridDB API key from the OS keyring.".to_string())?
             .ok_or_else(|| "Configure the SteamGridDB API key in Settings first.".to_string())?;
 
-        let result = (|| -> Result<Game, String> {
+        let result = (|| -> Result<T, String> {
             let transport = ReqwestTransport::without_redirects(ARTWORK_TIMEOUT)
                 .map_err(|_| "Could not prepare the artwork download.".to_string())?;
             let client = SteamGridDbClient::new(Arc::new(transport));
-            let mut engine = self.engine.lock().map_err(lock_error)?;
-            engine
-                .fetch_cover_art(&client, &api_key, game_id)
-                .map_err(|error| cover_fetch_error(&error))
+            action(&client, &api_key)
         })();
 
         // Best-effort scrub: the key's allocation is overwritten before it is
@@ -692,6 +779,11 @@ fn scrub_secret(secret: &mut String) {
 /// response bodies. Only the class of failure is exposed.
 fn cover_fetch_error(error: &savesync_core::Error) -> String {
     match error {
+        // The user picked a specific grid that upstream no longer offers, which
+        // is actionably different from "this game has no artwork".
+        savesync_core::Error::NotFound(message) if message == GRID_UNAVAILABLE_MESSAGE => {
+            "That cover is no longer available. Pick another.".to_string()
+        }
         savesync_core::Error::NotFound(_) => "No cover art found for this game.".to_string(),
         _ => "Could not fetch cover art for this game.".to_string(),
     }
@@ -936,6 +1028,8 @@ pub fn run() {
             steamgriddb_status,
             clear_steamgriddb_api_key,
             fetch_cover_art,
+            search_cover_candidates,
+            set_cover_grid,
             clear_cover_art,
             cover_url,
             sync_game,
@@ -968,6 +1062,29 @@ mod tests {
         assert!(store.save("").is_err());
         store.save("refresh").unwrap();
         assert_eq!(store.load().unwrap().as_deref(), Some("refresh"));
+    }
+
+    /// A stale manual pick is actionably different from "no artwork at all",
+    /// and neither path may forward the underlying error text.
+    #[test]
+    fn cover_errors_are_mapped_to_friendly_text_without_internals() {
+        let gone = savesync_core::Error::NotFound(GRID_UNAVAILABLE_MESSAGE.to_string());
+        assert_eq!(
+            cover_fetch_error(&gone),
+            "That cover is no longer available. Pick another."
+        );
+
+        let unmatched = savesync_core::Error::NotFound("no SteamGridDB match".to_string());
+        assert_eq!(
+            cover_fetch_error(&unmatched),
+            "No cover art found for this game."
+        );
+
+        let network =
+            savesync_core::Error::Network("https://cdn2.steamgriddb.com/grid/x.png".to_string());
+        let message = cover_fetch_error(&network);
+        assert_eq!(message, "Could not fetch cover art for this game.");
+        assert!(!message.contains("steamgriddb"));
     }
 
     /// A store whose every operation fails with a message that embeds a

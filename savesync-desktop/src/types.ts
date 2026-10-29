@@ -77,6 +77,30 @@ export interface ArtworkStatus {
   configured: boolean;
 }
 
+/**
+ * One downloadable cover candidate, exactly as `GridCandidate` serializes.
+ *
+ * `id` is the only value handed back when the user chooses a thumbnail; the
+ * backend matches it against a freshly fetched list and never treats it as a
+ * path or URL. `mime` is advisory: the cached file name follows the bytes.
+ */
+export interface GridCandidate {
+  id: number;
+  url: string;
+  width: number;
+  height: number;
+  mime: string;
+}
+
+/**
+ * A SteamGridDB match and its ranked candidates (`CoverSearch` in the core).
+ * `candidates` may be empty when the matched game has no usable grids.
+ */
+export interface CoverSearch {
+  sgdb_game_id: number;
+  candidates: GridCandidate[];
+}
+
 export interface AppStatus {
   device: string;
   platform: string;

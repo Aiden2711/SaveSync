@@ -16,6 +16,7 @@ import type {
   AppStatus,
   ArtworkStatus,
   Conflict,
+  CoverSearch,
   Game,
   GoogleStatus,
   RestoreReport,
@@ -147,6 +148,38 @@ let coverRevision = 0;
 let coverFetchError: string | null = null;
 
 /**
+ * What `search_cover_candidates` returns. Reset to the two-candidate default
+ * on every install so tests never observe a previous file's fixtures.
+ */
+function defaultCoverSearch(): CoverSearch {
+  return {
+    sgdb_game_id: 7,
+    candidates: [
+      {
+        id: 101,
+        url: "https://cdn2.steamgriddb.com/grid/101.png",
+        width: 600,
+        height: 900,
+        mime: "image/png",
+      },
+      {
+        id: 202,
+        url: "https://cdn2.steamgriddb.com/grid/202.png",
+        width: 600,
+        height: 900,
+        mime: "image/png",
+      },
+    ],
+  };
+}
+
+let coverSearchResponse: CoverSearch | null = defaultCoverSearch();
+/** When set, the next `search_cover_candidates` rejects with this message. */
+let coverSearchError: string | null = null;
+/** When set, the next search waits for it to resolve (loading-state tests). */
+let coverSearchGate: Promise<void> | null = null;
+
+/**
  * SteamGridDB key state for the stub. It tracks only whether a key is stored —
  * exactly like the Rust command surface, which never returns the key itself.
  */
@@ -180,12 +213,40 @@ export function failCoverFetch(message: string): void {
   coverFetchError = message;
 }
 
+/** Replace the candidate list returned by `search_cover_candidates`. */
+export function seedCoverCandidates(candidates: CoverSearch["candidates"]): void {
+  coverSearchResponse = { sgdb_game_id: 7, candidates };
+}
+
+/** Make the next search report "no SteamGridDB match" (`null`). */
+export function hideCoverCandidates(): void {
+  coverSearchResponse = null;
+}
+
+/** Makes the next `search_cover_candidates` reject with this message. */
+export function failCoverSearch(message: string): void {
+  coverSearchError = message;
+}
+
+/**
+ * Hold the next `search_cover_candidates` open until the returned function is
+ * called, so a test can observe the modal's loading state deterministically.
+ */
+export function stallNextCoverSearch(): () => void {
+  let release!: () => void;
+  coverSearchGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return () => release();
+}
+
 /** Fixtures are exported so tests can assert against the exact ids returned. */
 export const fixtures = {
   primaryGameId: PRIMARY_GAME_ID,
   games,
   revisions,
   conflicts,
+  coverCandidates: defaultCoverSearch().candidates,
 } as const;
 
 function restoreReport(revisionId: string): RestoreReport {
@@ -282,6 +343,37 @@ const handlers: Record<string, Handler> = {
     seededCovers.delete(gameId);
     return setCoverPath(gameId, null);
   },
+  search_cover_candidates: async (args) => {
+    assertKnownGame(args);
+    if (!artworkStatus.configured) {
+      throw new Error("Configure the SteamGridDB API key in Settings first.");
+    }
+    // Consumed before awaiting so a second search cannot stall on the same gate.
+    const gate = coverSearchGate;
+    coverSearchGate = null;
+    if (gate) await gate;
+    if (coverSearchError) {
+      // One-shot, so a test can assert the retry path independently.
+      const message = coverSearchError;
+      coverSearchError = null;
+      throw new Error(message);
+    }
+    return coverSearchResponse;
+  },
+  set_cover_grid: (args) => {
+    assertKnownGame(args);
+    const gameId = String(args.game_id);
+    if (!artworkStatus.configured) {
+      throw new Error("Configure the SteamGridDB API key in Settings first.");
+    }
+    const gridId = Number(args.grid_id);
+    const available = coverSearchResponse?.candidates ?? [];
+    if (!available.some((candidate) => candidate.id === gridId)) {
+      throw new Error("That cover is no longer available. Pick another.");
+    }
+    seededCovers.add(gameId);
+    return setCoverPath(gameId, `covers/${gameId}.png`);
+  },
 };
 
 export function installTauriStub(): InvokeCall[] {
@@ -295,6 +387,9 @@ export function installTauriStub(): InvokeCall[] {
   games.push(...baselineGames.map((game) => ({ ...game })));
   seededCovers.clear();
   coverFetchError = null;
+  coverSearchResponse = defaultCoverSearch();
+  coverSearchError = null;
+  coverSearchGate = null;
   coverRevision = 0;
 
   const internals: TauriInternalsStub = {

@@ -11,6 +11,7 @@ import type {
   DirtyEvent,
   Game,
   GoogleStatus,
+  GridCandidate,
   Revision,
   SyncReport,
 } from "./types";
@@ -75,6 +76,45 @@ function formatBytes(bytes: number): string {
 
 function shortId(id: string): string {
   return id.slice(0, 8);
+}
+
+/** State of the "Choose cover art" modal. */
+type CoverPickerState = {
+  gameId: string;
+  title: string;
+  status: "loading" | "ready" | "error";
+  candidates: GridCandidate[];
+  /** Friendly text only; never a raw backend message. */
+  error: string | null;
+  /** Grid id currently downloading, so every other thumbnail can be disabled. */
+  pickingId: number | null;
+  /**
+   * Grid ids whose CDN thumbnail failed to load. They are shown as unavailable
+   * and cannot be picked: selecting one would download from a URL the webview
+   * has just proven it cannot fetch. Per tile, never a dialog-wide error.
+   */
+  failedIds: number[];
+};
+
+/**
+ * User-facing text for a failed picker operation.
+ *
+ * Backend messages are matched against this allowlist instead of being
+ * rendered. An unexpected IPC, transport, or keyring error must never put a
+ * raw `error.message` — which can carry URLs or paths — into the dialog.
+ */
+function coverPickerMessage(cause: unknown): string {
+  const raw = cause instanceof Error ? cause.message : "";
+  if (raw === "Configure the SteamGridDB API key in Settings first.") {
+    return "Add a SteamGridDB API key in Settings to choose cover art.";
+  }
+  if (raw === "No cover art found for this game.") {
+    return "No cover art found for this game.";
+  }
+  if (raw === "That cover is no longer available. Pick another.") {
+    return "That cover is no longer available. Pick another.";
+  }
+  return "Could not load or save cover art. Check your connection and try again.";
 }
 
 /**
@@ -233,6 +273,16 @@ export default function App() {
    * cover appear here; everything else keeps the generated monogram.
    */
   const [coverUrls, setCoverUrls] = useState<Record<string, string>>({});
+  /** Open "Choose cover art" modal, or null when it is closed. */
+  const [coverPicker, setCoverPicker] = useState<CoverPickerState | null>(null);
+  /**
+   * Guards against a second `set_cover_grid` while the first is in flight: a
+   * state update is asynchronous, so two clicks in one tick would otherwise
+   * both pass the disabled check and download twice.
+   */
+  const coverPickInFlight = useRef(false);
+  /** The thumbnail grid, so a pick can keep keyboard focus inside the dialog. */
+  const coverGridRef = useRef<HTMLDivElement>(null);
 
   const titleInputRef = useRef<HTMLInputElement>(null);
   const [dirtyGames, setDirtyGames] = useState<Set<string>>(new Set());
@@ -619,6 +669,134 @@ export default function App() {
     },
     [run],
   );
+
+  /**
+   * Open the cover picker and load SteamGridDB candidates for one game.
+   *
+   * Exactly one search per open, and nothing is downloaded. The response is
+   * dropped if the dialog was closed (or retargeted) meanwhile, so a slow
+   * request can never resurrect a modal the user dismissed.
+   */
+  const openCoverPicker = useCallback(
+    async (gameId: string) => {
+      const game = games.find((candidate) => candidate.id === gameId);
+      setCoverPicker({
+        gameId,
+        title: game?.title ?? "This game",
+        status: "loading",
+        candidates: [],
+        error: null,
+        pickingId: null,
+        failedIds: [],
+      });
+      try {
+        const search = await api.searchCoverCandidates(gameId);
+        setCoverPicker((current) =>
+          current && current.gameId === gameId
+            ? {
+                ...current,
+                status: "ready",
+                candidates: search?.candidates ?? [],
+                error: null,
+              }
+            : current,
+        );
+      } catch (cause) {
+        setCoverPicker((current) =>
+          current && current.gameId === gameId
+            ? {
+                ...current,
+                status: "error",
+                candidates: [],
+                error: coverPickerMessage(cause),
+              }
+            : current,
+        );
+      }
+    },
+    [games],
+  );
+
+  const retryCoverSearch = useCallback(() => {
+    if (coverPicker) void openCoverPicker(coverPicker.gameId);
+  }, [coverPicker, openCoverPicker]);
+
+  const closeCoverPicker = useCallback(() => {
+    coverPickInFlight.current = false;
+    setCoverPicker(null);
+  }, []);
+
+  /**
+   * Download and record one chosen candidate, refresh that game's cover URL,
+   * then close the modal.
+   *
+   * Only the chosen grid is downloaded; thumbnails are CDN links rendered by
+   * the webview. A failure leaves the picker open with a friendly message and
+   * offers a fresh search rather than retrying a grid that may be gone.
+   */
+  const chooseCoverGrid = useCallback(
+    async (candidate: GridCandidate) => {
+      const picker = coverPicker;
+      if (!picker || picker.status !== "ready" || coverPickInFlight.current) return;
+      // A tile whose image failed is not pickable, even if something invokes
+      // this directly instead of going through its disabled button.
+      if (picker.failedIds.includes(candidate.id)) return;
+      coverPickInFlight.current = true;
+      setCoverPicker((current) =>
+        current ? { ...current, pickingId: candidate.id, error: null } : current,
+      );
+      try {
+        const updated = await api.setCoverGrid(picker.gameId, candidate.id);
+        setGames((prev) =>
+          prev.map((game) => (game.id === updated.id ? updated : game)),
+        );
+        let url: string | null = null;
+        try {
+          url = await api.coverUrl(updated.id);
+        } catch {
+          url = null;
+        }
+        if (url) {
+          setCoverUrls((prev) => ({ ...prev, [updated.id]: `${url}?v=${Date.now()}` }));
+        }
+        setCoverPicker(null);
+      } catch (cause) {
+        setCoverPicker((current) =>
+          current
+            ? {
+                ...current,
+                status: "error",
+                candidates: [],
+                pickingId: null,
+                error: coverPickerMessage(cause),
+              }
+            : current,
+        );
+      } finally {
+        coverPickInFlight.current = false;
+      }
+    },
+    [coverPicker],
+  );
+
+  const pickingCoverId = coverPicker?.pickingId ?? null;
+
+  /**
+   * Keep keyboard focus inside the dialog while a pick is in flight.
+   *
+   * Every thumbnail except the one being picked is disabled, so focus sitting
+   * on a sibling (possible through programmatic focus, or a browser that does
+   * not focus a button it was clicked on) would otherwise drop to
+   * `document.body` and strand keyboard users. The picking tile stays enabled
+   * and already carries the busy state, and `coverPickInFlight` makes a second
+   * activation a no-op, so it is safe for it to hold focus.
+   */
+  useEffect(() => {
+    if (pickingCoverId === null) return;
+    coverGridRef.current
+      ?.querySelector<HTMLButtonElement>(`[data-cover-id="${pickingCoverId}"]`)
+      ?.focus();
+  }, [pickingCoverId]);
 
   async function requestRestore(revision: Revision, exactMirror: boolean) {
     setDialogState({ kind: "restore", revision, exactMirror });
@@ -1590,6 +1768,21 @@ export default function App() {
               >
                 {busy === "Fetching cover art" ? "Fetching cover art…" : "Fetch cover art"}
               </button>
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                className="menu-item"
+                disabled={!!busy}
+                title="Pick a specific cover from SteamGridDB"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  closeMenu();
+                  if (menuGameId) void openCoverPicker(menuGameId);
+                }}
+              >
+                Choose cover art…
+              </button>
               <hr className="menu-separator" />
               <button
                 type="button"
@@ -1607,6 +1800,174 @@ export default function App() {
             </div>
           );
         })()
+      ) : null}
+
+      {coverPicker ? (
+        <Modal titleId="cover-picker-title" onClose={closeCoverPicker}>
+          <div className="dialog-card" onClick={(event) => event.stopPropagation()}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                justifyContent: "space-between",
+                gap: "16px",
+              }}
+            >
+              <h3 id="cover-picker-title" style={{ margin: 0 }}>
+                Choose cover art
+              </h3>
+              {/* Rendered before the thumbnails so it is the dialog's first
+                  focusable control: the shared Modal focuses it on open. */}
+              <button type="button" className="ghost" onClick={closeCoverPicker} autoFocus>
+                Cancel
+              </button>
+            </div>
+            <p className="muted small" style={{ marginTop: "6px" }}>
+              {coverPicker.title}
+            </p>
+
+            {coverPicker.status === "loading" ? (
+              <p role="status" style={{ marginTop: "16px" }}>
+                Loading cover art…
+              </p>
+            ) : null}
+
+            {coverPicker.status === "error" ? (
+              <div style={{ marginTop: "12px" }}>
+                <p role="alert">{coverPicker.error}</p>
+                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "12px" }}>
+                  <button type="button" className="primary" onClick={retryCoverSearch}>
+                    Retry
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {coverPicker.status === "ready" && coverPicker.candidates.length === 0 ? (
+              <div style={{ marginTop: "16px" }}>
+                <p role="status">No cover art found</p>
+                <p className="muted small">
+                  SteamGridDB has no usable artwork for this game. Your current cover is
+                  unchanged.
+                </p>
+              </div>
+            ) : null}
+
+            {coverPicker.status === "ready" && coverPicker.candidates.length > 0 ? (
+              <div
+                ref={coverGridRef}
+                role="group"
+                aria-label="Cover art candidates"
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(96px, 1fr))",
+                  gap: "10px",
+                  maxHeight: "min(52vh, 420px)",
+                  overflowY: "auto",
+                  marginTop: "12px",
+                  paddingRight: "4px",
+                }}
+              >
+                {coverPicker.candidates.map((candidate, index) => {
+                  const unavailable = coverPicker.failedIds.includes(candidate.id);
+                  const picking = coverPicker.pickingId === candidate.id;
+                  const busy = coverPicker.pickingId !== null;
+                  // The tile in flight stays enabled so it can keep keyboard
+                  // focus (`coverPickInFlight` blocks a second activation); an
+                  // unavailable tile can never be picked.
+                  const disabled = unavailable || (busy && !picking);
+                  return (
+                    <button
+                      type="button"
+                      key={candidate.id}
+                      data-cover-id={candidate.id}
+                      disabled={disabled}
+                      aria-busy={picking || undefined}
+                      aria-label={
+                        unavailable
+                          ? `Cover ${index + 1} unavailable`
+                          : `Use cover ${index + 1}${
+                              candidate.width && candidate.height
+                                ? ` (${candidate.width}×${candidate.height})`
+                                : ""
+                            }`
+                      }
+                      onClick={() => void chooseCoverGrid(candidate)}
+                      style={{
+                        position: "relative",
+                        padding: 0,
+                        border: "none",
+                        background: "transparent",
+                        cursor: unavailable ? "not-allowed" : busy ? "progress" : "pointer",
+                        aspectRatio: "2 / 3",
+                        overflow: "hidden",
+                        borderRadius: "6px",
+                        opacity: unavailable ? 0.4 : busy && !picking ? 0.55 : 1,
+                      }}
+                    >
+                      <img
+                        src={candidate.url}
+                        alt=""
+                        loading="lazy"
+                        // A silent empty box hides the fact that the tile can no
+                        // longer be used; mark just this candidate instead of
+                        // failing the whole dialog.
+                        onError={() =>
+                          setCoverPicker((current) =>
+                            current &&
+                            current.gameId === coverPicker.gameId &&
+                            !current.failedIds.includes(candidate.id)
+                              ? { ...current, failedIds: [...current.failedIds, candidate.id] }
+                              : current,
+                          )
+                        }
+                        style={{
+                          width: "100%",
+                          height: "100%",
+                          objectFit: "cover",
+                          display: "block",
+                        }}
+                      />
+                      {unavailable ? (
+                        <span
+                          style={{
+                            position: "absolute",
+                            inset: 0,
+                            display: "grid",
+                            placeItems: "center",
+                            padding: "4px",
+                            background: "rgba(0, 0, 0, 0.72)",
+                            color: "#fff",
+                            fontSize: "0.68rem",
+                            lineHeight: 1.2,
+                            textAlign: "center",
+                          }}
+                        >
+                          Image unavailable
+                        </span>
+                      ) : null}
+                      {picking ? (
+                        <span
+                          style={{
+                            position: "absolute",
+                            inset: 0,
+                            display: "grid",
+                            placeItems: "center",
+                            background: "rgba(0, 0, 0, 0.55)",
+                            color: "#fff",
+                            fontSize: "0.8rem",
+                          }}
+                        >
+                          Saving…
+                        </span>
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+        </Modal>
       ) : null}
 
       {enrollOpen ? (

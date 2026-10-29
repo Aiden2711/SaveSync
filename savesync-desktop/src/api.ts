@@ -3,6 +3,7 @@ import type {
   AppStatus,
   ArtworkStatus,
   Conflict,
+  CoverSearch,
   DirtyEvent,
   DiscoveredGame,
   Game,
@@ -63,6 +64,13 @@ export const api = {
   clearSteamgriddbApiKey: () => invoke<ArtworkStatus>("clear_steamgriddb_api_key"),
 
   fetchCoverArt: (game_id: string) => invoke<Game>("fetch_cover_art", { game_id }),
+
+  /** Ranked cover candidates, or `null` when SteamGridDB has no match at all. */
+  searchCoverCandidates: (game_id: string) =>
+    invoke<CoverSearch | null>("search_cover_candidates", { game_id }),
+
+  setCoverGrid: (game_id: string, grid_id: number) =>
+    invoke<Game>("set_cover_grid", { game_id, grid_id }),
 
   clearCoverArt: (game_id: string) => invoke<Game>("clear_cover_art", { game_id }),
 
