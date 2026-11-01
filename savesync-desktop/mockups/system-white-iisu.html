@@ -1,0 +1,2022 @@
+<!DOCTYPE html>
+<!--
+  WCAG 2.1 AA contrast verification — measured sRGB ratios (WCAG 2.1 relative luminance).
+  Text pairs (require >= 4.5:1 at every size used):
+    #101720 on #ffffff ................. 18.02:1  (headings, default UI text)
+    #465468 on #ffffff .................  7.70:1  (inactive labels, tile meta)
+    #5f6d80 on #ffffff .................  5.27:1  (eyebrows, timestamps, paths)
+    #101720 on #f4f7fb ................. 16.77:1  (section and tile titles on page base)
+    #465468 on #f4f7fb .................  7.16:1  (tile meta, body copy on page base)
+    #5f6d80 on #f4f7fb .................  4.90:1  (eyebrows on page base)
+    #465468 on #eef3fa .................  6.90:1  (chips / tinted rows)
+    #5f6d80 on #eef3fa .................  4.73:1  (path text on tinted row)
+    #ffffff on #0a6db0 .................  5.49:1  (primary button label)
+    #ffffff on #095f99 .................  6.76:1  (primary hover)
+    #ffffff on #b3261e .................  6.54:1  (danger confirm label)
+    #b3261e on #ffffff .................  6.54:1  (danger text / warning label)
+    #b3261e on #fff2f1 .................  5.98:1  (danger text on warning panel)
+    #ffffff on #8f1d17 .................  8.91:1  (danger hover)
+    #2a66d8 on #f4f7fb .................  4.90:1  (wordmark gradient, blue stop)
+    #7c4de0 on #f4f7fb .................  4.89:1  (wordmark gradient, purple stop)
+    #b8337a on #f4f7fb .................  5.15:1  (wordmark gradient, pink stop)
+    #465468 on #f5f8fd .................  7.23:1  (quiet button ink on the glass detail panel,
+                                                  worst case: 80% white over the tinted wash)
+    #5f6d80 on #f5f8fd .................  4.95:1  (detail kicker on the same glass worst case)
+  Portrait cover monograms (the 2:3 art is a gradient, so it is measured conservatively):
+    #131c29 on the cover's white plate ..  9.10:1  (lowest of all 10 tile monograms; the plate is
+                                                    a flat 55% white over the deepest composite the
+                                                    art stack can produce, so the ratio holds
+                                                    wherever a monogram can sit at any breakpoint.
+                                                    Detail cover: 10.34:1)
+  The selected tile's "Jump back in!" pill is opaque #ffffff with #101720 ink, so its label sits on
+  flat white (18.02:1 above) and never on the gradient art. The pill overlaps the cover as decoration.
+  Bottom band: one ink set for navigation; state is carried by the well, not a hue.
+    #465468 on #eaf0f8 (band base) .....  6.71:1  (nav icons/labels at rest, status text)
+    #465468 on #eef3fa (current well) ..  6.90:1  (current destination, hover, band buttons)
+    #101720 on #eaf0f8 ................. 15.72:1  (status counts, current destination label)
+  Pastel gradient tile borders and glow shadows are decoration only; no text sits on them.
+  The wordmark is the single permitted gradient-text treatment, and its refined stops still
+  clear 4.5:1 (the supplied #4f8ef7/#9b6df3/#e06ab8 stops measured only 3.2–3.6:1).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="description" content="Static mockup: SaveSync desktop UI in the System White, Iisu design language.">
+<title>SaveSync — System White, Iisu (mockup)</title>
+<link rel="icon" href="data:,">
+<style>
+/*
+ * SaveSync — "System White, Iisu".
+ * An Iisu x Wii U blend: glossy white squircles on white, pastel gradient tile
+ * borders, glass panels with a hairline gradient outline, one ink navigation
+ * set, and generous whitespace. Light theme only; this file is a
+ * static design preview and ships nowhere.
+ */
+
+@font-face {
+  font-family: "Fredoka";
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url("../src/assets/fonts/fredoka-latin-var.woff2") format("woff2");
+}
+
+:root {
+  /* Surfaces */
+  --base: #f4f7fb;
+  --base-2: #eaf0f8;
+  --surface: #ffffff;
+  --surface-2: #eef3fa;
+  --line: #d8e2ef;
+
+  /* Ink */
+  --ink: #101720;
+  --ink-2: #465468;
+  --ink-3: #5f6d80;
+
+  /* Accents */
+  --accent: #0a6db0;
+  --accent-hover: #095f99;
+  --accent-ink: #ffffff;
+  --danger: #b3261e;
+  --danger-hover: #8f1d17;
+  --danger-ink: #ffffff;
+  --danger-surface: #fff2f1;
+  --danger-line: #f3c9c4;
+
+  --focus-ring: #0a6db0;
+
+  /* Wordmark chrome (refined for 4.5:1; see the ratio block above). */
+  --mark-blue: #2a66d8;
+  --mark-purple: #7c4de0;
+  --mark-pink: #b8337a;
+
+  --font-display: "Fredoka", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "Consolas", "SF Mono", monospace;
+
+  /* Fixed scale; nothing renders below 14px. */
+  --text-2xs: 14px;
+  --text-xs: 14px;
+  --text-sm: 15px;
+  --text-base: 15.5px;
+  --text-md: 18px;
+  --text-lg: 22px;
+  --text-xl: 28px;
+  --text-2xl: 34px;
+
+  --radius-panel: 24px;
+  --radius-dialog: 16px;
+  --radius-control: 8px;
+  --radius-pill: 999px;
+
+  /* Portrait covers. 2:3 is the SteamGridDB portrait grid (600x900) — the exact
+     shape the artwork pipeline requests (PORTRAIT_DIMENSIONS in
+     savesync-core/src/artwork.rs) — so the mockup's covers match real fetched key
+     art instead of a square placeholder. Portrait squircles want less corner
+     rounding than 1:1 did: ~15% of the cover's height keeps the Wii U chrome,
+     while 20-22% on a tall cover pinches both long edges and reads as a pill.
+     Percent radii are elliptical, so the horizontal value is 1.5x the vertical
+     one — that is the only way to get circular corners on a 2:3 box. */
+  --cover-ar: 2 / 3;
+  --cover-radius: 20.25% / 13.5%;
+  --cover-radius-inner: 18% / 12%;
+  --detail-cover-w: 150px;
+
+  --shadow-near: 0 1px 2px rgba(16, 23, 32, 0.05);
+  --shadow-far: 0 18px 44px rgba(47, 86, 140, 0.14);
+
+  /* The bottom band's height in border-box terms (its 1px top hairline is
+     included), so the page's bottom padding is derived from it rather than
+     guessed: 64px band + 60px of breathing room clears the last row of content
+     at every breakpoint. */
+  --band-h: 64px;
+
+  --dur-fast: 140ms;
+  --dur: 220ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Cover art palette tokens (from src/lib/cover.ts). The generated covers are
+     painted by the inline script at the end of this document, which resolves
+     these tokens with getComputedStyle — so the palette lives here, once, and
+     never as a raw hex inside the script or the SVG. */
+  --cover-palette-0-bg: #2b3568;
+  --cover-palette-0-bg2: #3a4685;
+  --cover-palette-0-ink: #eef2ff;
+  --cover-palette-0-accent: #a8b8ff;
+  --cover-palette-1-bg: #33415e;
+  --cover-palette-1-bg2: #44567a;
+  --cover-palette-1-ink: #f2f6ff;
+  --cover-palette-1-accent: #a9c4f5;
+  --cover-palette-2-bg: #10424f;
+  --cover-palette-2-bg2: #175a69;
+  --cover-palette-2-ink: #eafcff;
+  --cover-palette-2-accent: #7fe0f0;
+  --cover-palette-3-bg: #101a33;
+  --cover-palette-3-bg2: #1b2a4d;
+  --cover-palette-3-ink: #eaf1ff;
+  --cover-palette-3-accent: #88a8ff;
+  --cover-palette-4-bg: #3a2340;
+  --cover-palette-4-bg2: #4d2f56;
+  --cover-palette-4-ink: #fdf1ff;
+  --cover-palette-4-accent: #e2a6f0;
+  --cover-palette-5-bg: #084a63;
+  --cover-palette-5-bg2: #0c6383;
+  --cover-palette-5-ink: #eafaff;
+  --cover-palette-5-accent: #8fe3ff;
+  --cover-palette-6-bg: #37424e;
+  --cover-palette-6-bg2: #4a5967;
+  --cover-palette-6-ink: #f1f6fb;
+  --cover-palette-6-accent: #b6cddd;
+  --cover-palette-7-bg: #d8e3f0;
+  --cover-palette-7-bg2: #c3d4e8;
+  --cover-palette-7-ink: #101720;
+  --cover-palette-7-accent: #2f5f9e;
+  --cover-palette-8-bg: #e7eef8;
+  --cover-palette-8-bg2: #d0ddee;
+  --cover-palette-8-ink: #141f31;
+  --cover-palette-8-accent: #2c63a8;
+  --cover-palette-9-bg: #cbdaea;
+  --cover-palette-9-bg2: #b1c7dd;
+  --cover-palette-9-ink: #0f1c2b;
+  --cover-palette-9-accent: #27578e;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--base);
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  /* --band-h + 60px: the edge-docked band never covers content, and .wrap adds
+     its own 60px of bottom padding on top of this for breathing room. */
+  padding-bottom: calc(var(--band-h) + 60px);
+  background:
+    radial-gradient(90% 60% at 8% -6%, #eaf3ff 0%, transparent 62%),
+    radial-gradient(80% 54% at 96% 4%, #fdeff8 0%, transparent 58%),
+    var(--base);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: var(--text-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  scrollbar-color: #b9c8dc transparent;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-weight: 600;
+}
+
+p {
+  margin: 0;
+}
+
+ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Shell                                                              */
+/* ------------------------------------------------------------------ */
+
+.skip-link {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 100;
+  padding: 10px 18px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  text-decoration: none;
+  transform: translateY(-160%);
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.skip-link:focus-visible {
+  transform: translateY(0);
+}
+
+/* ---- 01 · Header / wordmark -------------------------------------- */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  padding: 14px 0;
+  background: rgba(255, 255, 255, 0.86);
+  border-bottom: 1px solid rgba(216, 226, 239, 0.75);
+  backdrop-filter: blur(20px) saturate(1.15);
+  -webkit-backdrop-filter: blur(20px) saturate(1.15);
+}
+
+.topbar-inner {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  width: min(1180px, calc(100% - 64px));
+  margin: 0 auto;
+}
+
+.brand {
+  flex: none;
+}
+
+/* The one sanctioned gradient text. Fredoka's wide 'S' shapes hold it well. */
+.wordmark {
+  font-family: var(--font-display);
+  font-size: var(--text-2xl);
+  font-weight: 600;
+  line-height: 1.06;
+  letter-spacing: -0.02em;
+  padding-block: 2px;
+  background-image: linear-gradient(
+    96deg,
+    var(--mark-blue) 0%,
+    var(--mark-purple) 52%,
+    var(--mark-pink) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+@supports not ((background-clip: text) or (-webkit-background-clip: text)) {
+  .wordmark {
+    background: none;
+    color: var(--mark-blue);
+    -webkit-text-fill-color: currentColor;
+  }
+}
+
+.brand-tag {
+  margin-top: 2px;
+  color: var(--ink-2);
+  font-size: var(--text-xs);
+  font-weight: 550;
+  letter-spacing: 0.01em;
+}
+
+/* ---- 02 · Bottom band -------------------------------------------- */
+
+/* DESIGN.md component spec, verbatim: an edge-docked full-width strip on
+   --base-2 with a 1px --line top border, no shadow, no outer radius. It is
+   chrome, not a floating object — so the height is the token --band-h and the
+   page clears it with derived padding. Three columns keep the composition
+   honest: the status readout sits left behind a hairline divider, the four
+   destinations stay optically centred, and the enrollment actions land flush
+   right. */
+.band {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 55;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 18px;
+  height: var(--band-h);
+  padding: 0 24px;
+  background: var(--base-2);
+  border-top: 1px solid var(--line);
+}
+
+.band-start {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* The readout is a sentence that shortens instead of truncating: lead and tail
+   spans are dropped at narrow widths, leaving "10 games". */
+.band-status {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  color: var(--ink-2);
+  font-size: var(--text-2xs);
+  font-weight: 550;
+  white-space: nowrap;
+}
+
+.band-status strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* The only round thing on the band: the live state dot. No halo — the accent
+   fill alone carries "backup is live". */
+.status-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.band-divider {
+  flex: none;
+  width: 1px;
+  height: 24px;
+  background: var(--line);
+}
+
+.band-nav {
+  display: flex;
+  align-items: center;
+  justify-self: center;
+  gap: 6px;
+}
+
+.band-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* One horizontal control per destination, 8px like every other control in this
+   language. State is the well, not a hue: rest is ink on the band, hover and the
+   current page are a --surface-2 well behind a --line border, and weight plus
+   aria-current carry the difference for anyone who cannot separate the two
+   backgrounds. */
+.nav-item {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: var(--text-2xs);
+  font-weight: 550;
+  line-height: 1.1;
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.nav-item:hover {
+  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+.nav-item:active {
+  background: var(--line);
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+.nav-item[aria-current="page"] {
+  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.nav-item:disabled {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink-3);
+  cursor: not-allowed;
+}
+
+.nav-item:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.nav-icon {
+  display: block;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  color: currentColor;
+  transition: transform var(--dur) var(--ease);
+}
+
+.nav-item:hover .nav-icon {
+  transform: translateY(-1px);
+}
+
+/* Band controls follow the 8px control radius, and the actions keep their icon
+   when their label is shed on narrow screens. */
+.band .btn {
+  border-radius: var(--radius-control);
+  box-shadow: none;
+}
+
+.band .btn-icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.theme-toggle {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink-2);
+  box-shadow: var(--shadow-near);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.theme-toggle:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.theme-toggle svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Page scaffolding                                                   */
+/* ------------------------------------------------------------------ */
+
+.wrap {
+  width: min(1180px, calc(100% - 64px));
+  margin: 0 auto;
+  padding: 44px 0 60px;
+}
+
+.section {
+  margin-bottom: 64px;
+  scroll-margin-top: 120px;
+}
+
+.section-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-bottom: 22px;
+}
+
+.eyebrow {
+  margin-bottom: 6px;
+  color: var(--ink-3);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.section-title {
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  font-weight: 600;
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+}
+
+.section-sub {
+  margin-top: 6px;
+  max-width: 66ch;
+  color: var(--ink-2);
+  font-size: var(--text-sm);
+}
+
+/* ------------------------------------------------------------------ */
+/* Buttons                                                            */
+/* ------------------------------------------------------------------ */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+
+.btn:hover {
+  background: var(--surface-2);
+}
+
+.btn:active {
+  transform: scale(0.985);
+}
+
+.btn-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: 0 8px 20px rgba(10, 109, 176, 0.24);
+}
+
+.btn-primary:hover {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+}
+
+/* Secondary: white fill with a hairline pastel gradient outline. The white
+   padding-box keeps the text on a flat surface so the outline stays decoration. */
+.btn-hairline {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--surface), var(--surface)) padding-box,
+    linear-gradient(122deg, #b9d4ff 0%, #d6c6ff 46%, #ffc9e3 100%) border-box;
+}
+
+.btn-hairline:hover {
+  background:
+    linear-gradient(#f7fafe, #f7fafe) padding-box,
+    linear-gradient(122deg, #a8c8fb 0%, #c9b4fb 46%, #ffb7da 100%) border-box;
+}
+
+.btn-quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-2);
+}
+
+.btn-quiet:hover {
+  border-color: transparent;
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.btn-danger {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--danger-ink);
+  box-shadow: 0 8px 20px rgba(179, 38, 30, 0.22);
+}
+
+.btn-danger:hover {
+  border-color: var(--danger-hover);
+  background: var(--danger-hover);
+}
+
+.btn-small {
+  min-height: 36px;
+  padding: 0 16px;
+  font-size: var(--text-2xs);
+}
+
+/* ------------------------------------------------------------------ */
+/* 03 · Library grid                                                  */
+/* ------------------------------------------------------------------ */
+
+/* Wii U page indicator: the home menu always tells you how many pages of
+   software exist, with the live page marked. Decorative in this preview
+   (aria-hidden) — the mockup shows a single page. */
+.page-dots {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin: 0 0 22px;
+}
+
+.page-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #c3d1e3;
+  transition: background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+
+/* Size carries the state as well as hue, so the active page never depends on
+   colour alone. */
+.page-dot.is-active {
+  background: var(--accent);
+  transform: scale(1.3);
+}
+
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  align-items: start;
+  gap: 30px 18px;
+}
+
+.tile-cell {
+  display: flex;
+  min-width: 0;
+}
+
+.tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: center;
+  transition: transform var(--dur) var(--ease);
+}
+
+.tile:hover {
+  transform: translateY(-3px);
+}
+
+/* Cover rim. The colour identity now comes from the generated cover's own
+   palette: the script sets --cover-bg2 / --cover-accent on each tile from the
+   matching :root token pair, so the rim tracks the artwork instead of a
+   separate pastel hue. Decoration only: it wraps the squircle cover and nothing
+   else, so the label and meta sit on the page base, never inside the rim.
+   `position: relative` anchors the callout pill to the cover's own bottom edge
+   rather than to the label block. */
+.tile-frame {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 3px;
+  border-radius: var(--cover-radius);
+  background: var(--cover-bg2, var(--surface-2));
+  box-shadow:
+    0 10px 26px rgba(47, 86, 140, 0.2),
+    0 2px 6px rgba(16, 23, 32, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  transition: box-shadow var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+
+.tile:hover .tile-frame {
+  box-shadow:
+    0 16px 34px rgba(47, 86, 140, 0.28),
+    0 3px 8px rgba(16, 23, 32, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+
+/* The art surface: one generated 2:3 cover per game (see the inline script at
+   the end of the document). `display: block` is load-bearing — the tile art is
+   a <span>, and an inline box has no principal height, so `aspect-ratio` was
+   inert and the cover collapsed to 0×0 while the label rode up over the frame.
+   Shared with the detail panel so both show the same key art. */
+.tile-art,
+.detail-art {
+  position: relative;
+  display: block;
+  aspect-ratio: var(--cover-ar);
+  overflow: hidden;
+  border-radius: var(--cover-radius-inner);
+  background: var(--surface-2);
+}
+
+/* The generated cover fills its slot. The viewBox is 600x900 and the slot is
+   2:3, so `slice` is a no-op at grid scale and only crops if a slot is ever
+   given a different shape. */
+.tile-art > svg,
+.detail-art > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Selected: the cover's own accent becomes the rim, and a halo in the page's
+   accent colour lifts the tile off the base. The non-colour affordances stay:
+   the white check badge, the outline ring drawn on the cover, and the accent
+   rim's contrast step, so the state is never carried by colour alone. */
+.tile[aria-current="true"] .tile-frame {
+  background: var(--cover-accent, var(--accent));
+  box-shadow:
+    0 0 0 3px rgba(10, 109, 176, 0.32),
+    0 0 30px 8px rgba(10, 109, 176, 0.26),
+    0 20px 40px rgba(47, 86, 140, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+
+/* The ring hugs the cover, not the whole label block, and follows its radius.
+   The preview shows the selected tile's ring statically; live, the same ring
+   appears on :focus-visible for every interactive element. */
+.tile:focus-visible {
+  outline: 0;
+}
+
+.tile:focus-visible .tile-frame,
+.tile[aria-current="true"] .tile-frame {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 5px;
+}
+
+.tile-check {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--accent);
+  box-shadow: var(--shadow-near);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.tile[aria-current="true"] .tile-check {
+  opacity: 1;
+}
+
+.tile-check svg {
+  display: block;
+  width: 15px;
+  height: 15px;
+}
+
+/* The memorable moment from the references: a white pill straddling the selected
+   cover's bottom edge. It is a <span>, not a nested <button> — interactive
+   content inside a button is invalid HTML and would give the tile a second,
+   competing name — so, exactly like .tile-check above, it is a decorative
+   affordance inside the tile button. The live row reaches the same action from
+   the detail panel and the status bar; this preview shows the shape only. */
+.tile-callout {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  z-index: 3;
+  display: none;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 14px 7px 12px;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow:
+    0 8px 18px rgba(16, 23, 32, 0.24),
+    0 1px 2px rgba(16, 23, 32, 0.12);
+  transform: translate(-50%, 42%);
+  pointer-events: none;
+}
+
+.tile-callout svg {
+  display: block;
+  width: 11px;
+  height: 11px;
+  fill: currentColor;
+}
+
+.tile[aria-current="true"] .tile-callout {
+  display: inline-flex;
+}
+
+/* Wii U home-menu structure: label and meta stack under the cover on the page
+   base, centred, with no card and no border around them. The top padding clears
+   the callout pill, which hangs 42% of its own height below the cover. */
+.tile-label {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  padding: 18px 2px 0;
+}
+
+.tile-title {
+  display: -webkit-box;
+  max-width: 100%;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: var(--text-md);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  word-spacing: 0.06em;
+}
+
+.tile-meta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: var(--text-2xs);
+  font-weight: 550;
+  line-height: 1.4;
+}
+
+.tile-meta-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Dirty marker sits inline before the meta line, on the page base, so it can
+   never collide with the check badge on the cover's top-right corner. */
+.dirty-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--base);
+}
+
+/* The final tile is the "add" affordance: neutral dashed, no hue claim. It keeps
+   the portrait box so the grid stays on one rhythm. */
+.tile-cell.is-enroll .tile-frame {
+  padding: 0;
+  border: 2px dashed #c3d1e3;
+  border-radius: var(--cover-radius);
+  background: rgba(255, 255, 255, 0.6);
+  box-shadow: none;
+}
+
+/* Re-centre the plus: the shared art rule is a plain cover slot, so the enroll
+   tile opts back into a centred grid and drops the cover's backing plate. */
+.tile-cell.is-enroll .tile-art {
+  display: grid;
+  place-items: center;
+  background: transparent;
+  color: var(--ink-3);
+}
+
+.tile-cell.is-enroll:hover .tile-frame {
+  border-color: #a8bad0;
+  box-shadow: 0 12px 26px rgba(47, 86, 140, 0.12);
+}
+
+.enroll-plus {
+  width: 52px;
+  height: 52px;
+}
+
+/* ------------------------------------------------------------------ */
+/* 04 · Detail panel (glassy, gradient hairline)                      */
+/* ------------------------------------------------------------------ */
+
+.glass-panel {
+  position: relative;
+  border: 1px solid transparent;
+  border-radius: 30px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(245, 250, 255, 0.8)) padding-box,
+    linear-gradient(
+        126deg,
+        hsl(212 92% 82%) 0%,
+        hsl(266 82% 86%) 38%,
+        hsl(330 86% 88%) 70%,
+        hsl(174 72% 82%) 100%
+      )
+      border-box;
+  box-shadow:
+    0 26px 60px rgba(47, 86, 140, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(18px) saturate(1.12);
+  -webkit-backdrop-filter: blur(18px) saturate(1.12);
+}
+
+/* Very light tinted interior wash, kept behind the content. */
+.glass-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background:
+    radial-gradient(60% 90% at 4% 0%, rgba(206, 228, 255, 0.45) 0%, transparent 62%),
+    radial-gradient(55% 90% at 98% 100%, rgba(255, 214, 236, 0.4) 0%, transparent 66%);
+  pointer-events: none;
+}
+
+.detail {
+  display: grid;
+  grid-template-columns: var(--detail-cover-w) minmax(0, 1fr) auto;
+  gap: 28px;
+  align-items: center;
+  padding: 28px 30px;
+}
+
+.detail > * {
+  position: relative;
+}
+
+/* Same key art as Hades' grid tile: the script reads the same title for both,
+   so the panel can never show a different cover from the one the user selected.
+   2:3 like the grid, one step wider (150px -> 225px tall) so the cover still
+   reads at panel scale. The rim takes the palette's bg2, matching .tile-frame. */
+.detail-cover {
+  width: var(--detail-cover-w);
+  padding: 3px;
+  border-radius: var(--cover-radius);
+  background: var(--cover-bg2, var(--surface-2));
+  box-shadow: 0 14px 30px rgba(47, 86, 140, 0.24);
+}
+
+.detail-copy {
+  min-width: 0;
+}
+
+.kicker {
+  color: var(--ink-3);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.detail-title {
+  margin: 4px 0 6px;
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  font-weight: 600;
+  line-height: 1.06;
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
+}
+
+.detail-meta {
+  color: var(--ink-2);
+  font-size: var(--text-sm);
+}
+
+.detail-path {
+  display: inline-block;
+  max-width: 100%;
+  margin-top: 12px;
+  padding: 6px 12px;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: var(--text-2xs);
+  font-weight: 550;
+}
+
+.chip .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.detail-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  width: 186px;
+}
+
+.detail-actions .btn {
+  width: 100%;
+}
+
+/* ------------------------------------------------------------------ */
+/* 05 · Destructive restore dialog                                    */
+/* ------------------------------------------------------------------ */
+
+.dialog-stage {
+  display: grid;
+  place-items: center;
+  padding: 52px 28px;
+  border: 1px solid var(--line);
+  border-radius: 32px;
+  background:
+    radial-gradient(100% 120% at 10% 0%, #e7f1ff 0%, transparent 56%),
+    radial-gradient(100% 120% at 92% 100%, #ffe8f4 0%, transparent 60%),
+    var(--base-2);
+}
+
+.dialog-card {
+  width: 100%;
+  max-width: 486px;
+  padding: 28px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-dialog);
+  background:
+    linear-gradient(var(--surface), var(--surface)) padding-box,
+    linear-gradient(124deg, #bfd8ff 0%, #dccbff 42%, #ffcde4 72%, #c8f1ec 100%) border-box;
+  box-shadow: var(--shadow-far);
+}
+
+.dialog-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--danger-line);
+  border-radius: 12px;
+  background: var(--danger-surface);
+}
+
+.warn-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--danger);
+  color: var(--danger-ink);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.dialog-warn p {
+  color: var(--danger);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.dialog-title {
+  margin-bottom: 8px;
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.dialog-body {
+  color: var(--ink-2);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+.dialog-meta {
+  margin-top: 14px;
+  color: var(--ink-3);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 24px;
+}
+
+/* ------------------------------------------------------------------ */
+/* 06 · Empty state                                                   */
+/* ------------------------------------------------------------------ */
+
+.empty-panel {
+  max-width: 660px;
+  padding: 40px 38px;
+  border: 1px solid transparent;
+  border-radius: 28px;
+  background:
+    linear-gradient(var(--surface), var(--surface)) padding-box,
+    linear-gradient(126deg, #c6dcff 0%, #dfd0ff 48%, #ffd4e8 100%) border-box;
+  box-shadow: var(--shadow-far);
+}
+
+.empty-icon {
+  display: grid;
+  place-items: center;
+  width: 62px;
+  height: 62px;
+  margin-bottom: 20px;
+  border-radius: 20px;
+  background: #eaf2ff;
+  color: #1f63c9;
+  box-shadow: inset 0 0 0 1px #c9dcff;
+}
+
+.empty-icon svg {
+  width: 32px;
+  height: 32px;
+}
+
+.empty-title {
+  margin-bottom: 8px;
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.empty-body {
+  max-width: 48ch;
+  color: var(--ink-2);
+  font-size: var(--text-sm);
+}
+
+.empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 24px;
+}
+
+.empty-note {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  color: var(--ink-3);
+  font-size: var(--text-2xs);
+}
+
+/* ------------------------------------------------------------------ */
+/* Responsive                                                         */
+/* ------------------------------------------------------------------ */
+
+/* The band sheds its sentence first, then its button labels, then its labels
+   and divider — in that order, so the four destinations and the two actions are
+   the last things to go. Every breakpoint keeps the accessible name. */
+@media (max-width: 1200px) {
+  .band-lead,
+  .band-tail {
+    display: none;
+  }
+}
+
+@media (max-width: 1040px) {
+  .band-action-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .band-actions .btn {
+    min-width: 44px;
+    padding: 0 13px;
+  }
+}
+
+@media (max-width: 1020px) {
+  .topbar-inner,
+  .wrap {
+    width: min(100% - 40px, 1000px);
+  }
+
+  .detail {
+    grid-template-columns: 132px minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .detail-cover {
+    width: 132px;
+  }
+
+  .detail-actions {
+    grid-column: 2;
+    flex-direction: row;
+    flex-wrap: wrap;
+    width: auto;
+    margin-top: 4px;
+  }
+
+  .detail-actions .btn {
+    width: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  .topbar-inner,
+  .wrap {
+    width: calc(100% - 32px);
+  }
+
+  .wordmark {
+    font-size: var(--text-xl);
+  }
+
+  .tile-grid {
+    grid-template-columns: repeat(auto-fill, minmax(146px, 1fr));
+    gap: 22px 14px;
+  }
+
+  .section {
+    margin-bottom: 48px;
+  }
+
+  .detail {
+    grid-template-columns: 108px minmax(0, 1fr);
+    gap: 18px;
+    padding: 22px;
+  }
+
+  .detail-cover {
+    width: 108px;
+  }
+
+  .detail-actions {
+    grid-column: 1 / -1;
+  }
+
+  .dialog-stage {
+    padding: 26px 16px;
+  }
+
+  .dialog-card {
+    padding: 22px;
+  }
+
+  .empty-panel {
+    padding: 28px 22px;
+  }
+
+  /* Narrow band: labels are shed so the four destinations and two actions stay
+     44px targets. The labels keep their accessible names — clipped to 1px, never
+     display: none — and the status readout keeps only the count. */
+  .band {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 0 8px;
+  }
+
+  .band-divider {
+    display: none;
+  }
+
+  .nav-label,
+  .band-action-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .band-nav {
+    gap: 4px;
+  }
+
+  .nav-item {
+    min-width: 44px;
+    padding: 0 10px;
+  }
+
+  /* 18px icon + 2 x 10px padding + 2 x 1px border = 40px, so the 44px floor lands
+     exactly: 13px padding made each action 46px and starved the nav column.
+     The action gap drops to the nav's 4px so the pair plus its gutter is 92px and
+     all six 44px targets still fit inside 390px. */
+  .band-actions {
+    gap: 4px;
+  }
+
+  .band-actions .btn {
+    min-width: 44px;
+    padding: 0 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.001ms !important;
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+  }
+
+  .tile:hover,
+  .nav-item:hover .nav-icon,
+  .btn:active {
+    transform: none;
+  }
+
+  .skip-link {
+    transition: none;
+  }
+}
+</style>
+</head>
+<body>
+<a class="skip-link" href="#library">Skip to library</a>
+
+<!-- ================================================================ -->
+<!-- 01 · Header / wordmark — wordmark + tagline left, theme toggle     -->
+<!-- right; the primary destinations live in the bottom band (02).     -->
+<!-- ================================================================ -->
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <h1 class="wordmark">SaveSync</h1>
+      <p class="brand-tag">Local-first save history</p>
+    </div>
+
+    <div class="topbar-actions">
+      <!-- Placeholder: this mockup is light-only, so the control is present but inert. -->
+      <button class="theme-toggle" type="button" aria-label="Theme: light (dark mode not in this mockup)" title="Light theme only in this mockup">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+          <circle cx="12" cy="12" r="4.2"></circle>
+          <path d="M12 2.7v2.2M12 19.1v2.2M4.2 4.2l1.6 1.6M18.2 18.2l1.6 1.6M2.7 12h2.2M19.1 12h2.2M4.2 19.8l1.6-1.6M18.2 5.8l1.6-1.6"></path>
+        </svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <!-- ============================================================== -->
+  <!-- 03 · Library grid                                              -->
+  <!-- Hues are a stable hash of each title, cycling an 8-hue pastel   -->
+  <!-- wheel (blue, purple, pink, teal, green, amber, coral, cyan).    -->
+  <!-- ============================================================== -->
+  <section class="section" id="library" aria-labelledby="library-title">
+    <div class="section-head">
+      <div>
+        <p class="eyebrow">01 — Library</p>
+        <h2 class="section-title" id="library-title">Game library</h2>
+        <p class="section-sub">10 games enrolled · 3 with uncaptured save changes. Snapshots are manual, immutable, and always local-first.</p>
+      </div>
+      <button class="btn btn-primary" type="button">Enroll software</button>
+    </div>
+
+    <!-- Wii U page indicator. Decorative (aria-hidden): the preview shows one
+         page, and a live grid would expose real pagination controls instead. -->
+    <div class="page-dots" aria-hidden="true">
+      <span class="page-dot is-active"></span>
+      <span class="page-dot"></span>
+      <span class="page-dot"></span>
+      <span class="page-dot"></span>
+    </div>
+
+    <ul class="tile-grid">
+      <li class="tile-cell">
+        <button class="tile" type="button" aria-current="true">
+          <span class="tile-frame">
+            <span class="tile-art"></span>
+            <!-- The "Jump back in!" pill, as a <span> and not a <button>: a button
+                 inside the tile button is invalid HTML and would give the tile a
+                 second, competing name. It is decoration exactly like .tile-check,
+                 so it is hidden from assistive tech and the tile button keeps its
+                 own single, complete label. Living inside .tile-frame is what lets
+                 it straddle the cover's bottom edge at every breakpoint. -->
+            <span class="tile-callout" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false"><path d="M8 5.2v13.6L19 12z"></path></svg>
+              Jump back in!
+            </span>
+          </span>
+          <span class="tile-label">
+            <span class="tile-title">Hades</span>
+            <span class="tile-meta"><span class="tile-meta-text">Custom folder · Backed up</span></span>
+          </span>
+          <span class="tile-check" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M5 12.8 9.6 17.4 19 8"></path></svg>
+          </span>
+        </button>
+      </li>
+
+      <li class="tile-cell">
+        <button class="tile" type="button">
+          <span class="tile-frame">
+            <span class="tile-art"></span>
+          </span>
+          <span class="tile-label">
+            <span class="tile-title">Hollow Knight</span>
+            <span class="tile-meta"><span class="tile-meta-text">Ludusavi (PC) · No snapshots yet</span></span>
+          </span>
+        </button>
+      </li>
+
+      <li class="tile-cell">
+        <button class="tile" type="button">
+          <span class="tile-frame">
+            <span class="tile-art"></span>
+          </span>
+          <span class="tile-label">
+            <span class="tile-title">Celeste</span>
+            <span class="tile-meta"><span class="tile-meta-text">Emulator · Backed up</span></span>
+          </span>
+        </button>
+      </li>
+
+      <!-- Dirty-state indicator: uncaptured save bytes, marked on the meta line. -->
+      <li class="tile-cell">
+        <button class="tile" type="button">
+          <span class="tile-frame">
+            <span class="tile-art"></span>
+          </span>
+          <span class="tile-label">
+            <span class="tile-title">Stardew Valley</span>
+            <span class="tile-meta">
+              <span class="dirty-dot" role="img" aria-label="Uncaptured save changes" title="Uncaptured save changes"></span>
+              <span class="tile-meta-text">JKSV export · Backed up</span>
+            </span>
+          </span>
+        </button>
+      </li>
+
+      <li class="tile-cell">
+        <button class="tile" type="button">
+          <span class="tile-frame">
+            <span class="tile-art"></span>
+          </span>
+          <span class="tile-label">
+            <span class="tile-title">Baldur's Gate 3</span>
+            <span class="tile-meta"><span class="tile-meta-text">Custom folder · Backed up</span></span>
+          </span>
+        </button>
+      </li>
+
+      <li class="tile-cell">
+        <button class="tile" type="button">
+          <span class="tile-frame">
+            <span class="tile-art"></span>
+          </span>
+          <span class="tile-label">
+            <span class="tile-title">Elden Ring</span>
+            <span class="tile-meta">
+              <span class="dirty-dot" role="img" aria-label="Uncaptured save changes" title="Uncaptured save changes"></span>
+              <span class="tile-meta-text">Ludusavi (PC) · Backed up</span>
+            </span>
+          </span>
+        </button>
+      </li>
+
+      <li class="tile-cell">
+        <button class="tile" type="button">
+          <span class="tile-frame">
+            <span class="tile-art"></span>
+          </span>
+          <span class="tile-label">
+            <span class="tile-title">Disco Elysium</span>
+            <span class="tile-meta"><span class="tile-meta-text">Custom folder · Backed up</span></span>
+          </span>
+        </button>
+      </li>
+
+      <li class="tile-cell">
+        <button class="tile" type="button">
+          <span class="tile-frame">
+            <span class="tile-art"></span>
+          </span>
+          <span class="tile-label">
+            <span class="tile-title">Hades II</span>
+            <span class="tile-meta"><span class="tile-meta-text">Ludusavi (PC) · Backed up</span></span>
+          </span>
+        </button>
+      </li>
+
+      <li class="tile-cell">
+        <button class="tile" type="button">
+          <span class="tile-frame">
+            <span class="tile-art"></span>
+          </span>
+          <span class="tile-label">
+            <span class="tile-title">Signalis</span>
+            <span class="tile-meta"><span class="tile-meta-text">Emulator · Backed up</span></span>
+          </span>
+        </button>
+      </li>
+
+      <li class="tile-cell">
+        <button class="tile" type="button">
+          <span class="tile-frame">
+            <span class="tile-art"></span>
+          </span>
+          <span class="tile-label">
+            <span class="tile-title">Outer Wilds</span>
+            <span class="tile-meta"><span class="tile-meta-text">Custom folder · Backed up</span></span>
+          </span>
+        </button>
+      </li>
+
+      <li class="tile-cell is-enroll">
+        <button class="tile" type="button">
+          <span class="tile-frame">
+            <span class="tile-art">
+              <svg class="enroll-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                <path d="M12 5v14M5 12h14"></path>
+              </svg>
+            </span>
+          </span>
+          <span class="tile-label">
+            <span class="tile-title">Enroll software</span>
+            <span class="tile-meta"><span class="tile-meta-text">Add a save folder</span></span>
+          </span>
+        </button>
+      </li>
+    </ul>
+  </section>
+
+  <!-- ============================================================== -->
+  <!-- 04 · Detail view panel                                         -->
+  <!-- ============================================================== -->
+  <section class="section" id="detail" aria-labelledby="detail-title">
+    <div class="section-head">
+      <div>
+        <p class="eyebrow">02 — Detail</p>
+        <h2 class="section-title" id="detail-title">Selected game</h2>
+        <p class="section-sub">One glassy card holds identity, provenance, and the safe actions. Restore always previews and journals first.</p>
+      </div>
+    </div>
+
+    <div class="glass-panel detail">
+      <div class="detail-cover">
+        <div class="detail-art"></div>
+      </div>
+
+      <div class="detail-copy">
+        <p class="kicker">Custom folder</p>
+        <h3 class="detail-title">Hades</h3>
+        <p class="detail-meta">Last snapshot 2 min ago · rev-hades-03 · 11.8 MiB</p>
+        <code class="detail-path">C:\Users\aiden\Saved Games\Hades</code>
+        <div class="chips">
+          <span class="chip"><span class="dot" aria-hidden="true"></span>Local backup ready</span>
+          <span class="chip">Synced 2 h ago</span>
+          <span class="chip">3 revisions</span>
+        </div>
+      </div>
+
+      <div class="detail-actions">
+        <button class="btn btn-primary" type="button">Backup now</button>
+        <button class="btn btn-hairline" type="button">Restore latest…</button>
+        <!-- Mirrors the per-candidate SteamGridDB cover picker: quiet, because
+             choosing art changes presentation only, never save data. -->
+        <button class="btn btn-quiet btn-small" type="button">Change cover…</button>
+        <button class="btn btn-quiet btn-small" type="button">Sync now</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================== -->
+  <!-- 05 · Destructive restore-confirmation dialog                   -->
+  <!-- Cancel is the safe default and owns initial focus; Escape      -->
+  <!-- never confirms. Confirm is danger-filled, never accent.        -->
+  <!-- ============================================================== -->
+  <section class="section" id="dialog" aria-labelledby="dialog-heading">
+    <div class="section-head">
+      <div>
+        <p class="eyebrow">03 — Restore dialog</p>
+        <h2 class="section-title" id="dialog-heading">Confirm destructive restore</h2>
+        <p class="section-sub">Exact restore mirrors the snapshot, deleting files that are not in it. A verified safety backup is created first.</p>
+      </div>
+    </div>
+
+    <div class="dialog-stage">
+      <div class="dialog-card" role="dialog" aria-labelledby="restore-title" aria-describedby="restore-desc">
+        <div class="dialog-warn">
+          <span class="warn-icon" aria-hidden="true">!</span>
+          <p>Warning: Exact restore will delete files not in this snapshot.</p>
+        </div>
+        <h3 class="dialog-title" id="restore-title">Restore snapshot</h3>
+        <p class="dialog-body" id="restore-desc">The live folder will be made to match this snapshot exactly. Files that exist in the live folder but not in the snapshot will be permanently deleted. A verified safety backup is created before the operation.</p>
+        <p class="dialog-meta">Snapshot from Oct 24, 2026, 17:58 · rev-hades-03</p>
+        <div class="dialog-actions">
+          <button class="btn btn-hairline" type="button">Cancel</button>
+          <button class="btn btn-danger" type="button">Exact restore</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================== -->
+  <!-- 06 · Empty state                                               -->
+  <!-- ============================================================== -->
+  <section class="section" id="empty" aria-labelledby="empty-heading">
+    <div class="section-head">
+      <div>
+        <p class="eyebrow">04 — Empty state</p>
+        <h2 class="section-title" id="empty-heading">Nothing enrolled yet</h2>
+      </div>
+    </div>
+
+    <div class="empty-panel">
+      <span class="empty-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+          <path d="M4 5.4A2.4 2.4 0 0 1 6.4 3H19v15.2H6.4A2.4 2.4 0 0 0 4 20.6z"></path>
+          <path d="M4 20.6A2.4 2.4 0 0 1 6.4 18.2H19"></path>
+          <path d="M12 6.4v6M9 9.4h6"></path>
+        </svg>
+      </span>
+      <h3 class="empty-title">No games enrolled yet</h3>
+      <p class="empty-body">Use “Enroll software” to add a save folder and create your first immutable snapshot.</p>
+      <div class="empty-actions">
+        <button class="btn btn-primary" type="button">Enroll software</button>
+        <button class="btn btn-hairline" type="button">Review scan results</button>
+      </div>
+      <p class="empty-note">Discovery never enrolls automatically. Every game is added by explicit selection, and every restore keeps a recoverable copy.</p>
+    </div>
+  </section>
+</main>
+
+<!-- ================================================================ -->
+<!-- 02 · Bottom band — the edge-docked strip that carries the four    -->
+<!-- primary destinations, the local status readout, and the two       -->
+<!-- enrollment-side actions. Fixed and full-bleed: no shadow, no      -->
+<!-- radius, hairline top border only; body padding clears it.         -->
+<!-- ================================================================ -->
+<footer class="band" role="contentinfo">
+  <div class="band-start">
+    <p class="band-status">
+      <span class="status-dot" aria-hidden="true"></span>
+      <span class="band-lead">Local backup ready</span>
+      <span class="band-count"><strong>10</strong> games</span>
+      <span class="band-tail">· <strong>3</strong> with uncaptured changes</span>
+    </p>
+    <span class="band-divider" aria-hidden="true"></span>
+  </div>
+
+  <nav class="band-nav" aria-label="Primary">
+    <button class="nav-item" type="button" aria-current="page">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+        <rect x="3.2" y="3.2" width="7.4" height="7.4" rx="2.2"></rect>
+        <rect x="13.4" y="3.2" width="7.4" height="7.4" rx="2.2"></rect>
+        <rect x="3.2" y="13.4" width="7.4" height="7.4" rx="2.2"></rect>
+        <rect x="13.4" y="13.4" width="7.4" height="7.4" rx="2.2"></rect>
+      </svg>
+      <span class="nav-label">Library</span>
+    </button>
+
+    <button class="nav-item" type="button">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+        <path d="M3.6 12a8.4 8.4 0 1 0 2.6-6"></path>
+        <path d="M3.1 4.4v4.8h4.8"></path>
+        <path d="M12 8.1v4.3l2.9 1.7"></path>
+      </svg>
+      <span class="nav-label">Snapshots</span>
+    </button>
+
+    <button class="nav-item" type="button">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+        <path d="M20.4 11.6a8.4 8.4 0 0 0-14.9-4.9"></path>
+        <path d="M4.6 4.1v4.6h4.6"></path>
+        <path d="M3.6 12.4a8.4 8.4 0 0 0 14.9 4.9"></path>
+        <path d="M19.4 19.9v-4.6h-4.6"></path>
+      </svg>
+      <span class="nav-label">Sync</span>
+    </button>
+
+    <button class="nav-item" type="button">
+      <!-- Settings: a real cog — 8 chunky flat-topped teeth on a r6.6 rim, with a
+           round hole through the middle. Deliberately not the radial-spoke sun,
+           which read as a second theme toggle. -->
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+        <path d="M21.31 13.31 21.31 10.69 18.34 10.18 17.77 8.8 19.51 6.34 17.66 4.49 15.2 6.23 13.82 5.66 13.31 2.69 10.69 2.69 10.18 5.66 8.8 6.23 6.34 4.49 4.49 6.34 6.23 8.8 5.66 10.18 2.69 10.69 2.69 13.31 5.66 13.82 6.23 15.2 4.49 17.66 6.34 19.51 8.8 17.77 10.18 18.34 10.69 21.31 13.31 21.31 13.82 18.34 15.2 17.77 17.66 19.51 19.51 17.66 17.77 15.2 18.34 13.82 Z"></path>
+        <circle cx="12" cy="12" r="3.1"></circle>
+      </svg>
+      <span class="nav-label">Settings</span>
+    </button>
+  </nav>
+
+  <div class="band-actions">
+    <button class="btn btn-hairline btn-small" type="button">
+      <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+        <circle cx="10.6" cy="10.6" r="6.4"></circle>
+        <path d="M15.4 15.4 20.4 20.4"></path>
+      </svg>
+      <span class="band-action-label">Scan for games</span>
+    </button>
+    <button class="btn btn-primary btn-small" type="button">
+      <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+        <path d="M12 5.2v13.6"></path>
+        <path d="M5.2 12h13.6"></path>
+      </svg>
+      <span class="band-action-label">Enroll selected</span>
+    </button>
+  </div>
+</footer>
+<!-- Generated cover art: an inline, dependency-free port of
+     savesync-desktop/src/lib/cover.ts and src/components/CoverArt.tsx. The same
+     FNV-1a + avalanche hash turns a title into a light or dark field, a palette
+     within that field and a crest motif, and the title supplies the monogram, so
+     every cover is deterministic and there is no network request and no image.
+     The palette hex lives only in the :root tokens above; this script resolves
+     them with getComputedStyle and also mirrors the chosen palette onto
+     --cover-bg2 / --cover-accent so the tile rim and the detail rim track their
+     own artwork. Presentational only: every SVG is aria-hidden, so the tile
+     button keeps its accessible name. -->
+<script>
+(function () {
+  "use strict";
+
+  /* Crest centre. Every motif is drawn around this point, and the monogram sits
+     on it, so the three motifs share one optical size. */
+  var CREST_X = 300;
+  var CREST_Y = 436;
+  /* Field of each palette token, in the same order as the :root tokens above
+     (and as COVER_PALETTES in src/lib/cover.ts): whole curated palettes only. */
+  var PALETTE_FIELDS = [
+    "dark", "dark", "dark", "dark", "dark", "dark", "dark",
+    "light", "light", "light"
+  ];
+  var PALETTE_COUNT = PALETTE_FIELDS.length;
+  /* Share of titles that get a light-field cover, in percent. */
+  var LIGHT_FIELD_PERCENT = 45;
+  var COVER_MOTIFS = ["rings", "orbit", "slats"];
+
+  /* FNV-1a, 32-bit. Stable across runs and platforms. */
+  function fnv1a(value) {
+    var hash = 0x811c9dc5;
+    for (var index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    return hash >>> 0;
+  }
+
+  /* FNV-1a leaves its low bits unevenly distributed for short strings, so one
+     avalanche pass keeps palette and motif choices spread out while staying
+     deterministic per title. */
+  function mix32(value) {
+    var hash = value;
+    hash ^= hash >>> 16;
+    hash = Math.imul(hash, 0x85ebca6b);
+    hash ^= hash >>> 13;
+    hash = Math.imul(hash, 0xc2b2ae35);
+    hash ^= hash >>> 16;
+    return hash >>> 0;
+  }
+
+  /* Words that add no identity to a two-letter monogram. */
+  var SKIP_WORDS = new Set([
+    "the", "a", "an", "of", "and", "el", "la", "los", "las", "le", "les",
+    "de", "del", "der", "die", "das", "und", "et", "y", "in", "on", "at",
+    "to", "for", "with", "into", "from"
+  ]);
+
+  /* One letter for a single significant word, first + last initials otherwise,
+     so "Ori and the Blind Forest" reads as OF rather than OB. */
+  function monogramFor(title) {
+    var folded = title.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+    var words = folded
+      .split(/\s+/)
+      .map(function (word) {
+        return word.replace(/[^\p{L}\p{N}]/gu, "");
+      })
+      .filter(function (word) {
+        return word.length > 0;
+      })
+      .filter(function (word) {
+        return !SKIP_WORDS.has(word.toLowerCase());
+      });
+
+    if (words.length === 0) return "?";
+    if (words.length === 1) return Array.from(words[0])[0].toUpperCase();
+    var first = Array.from(words[0])[0];
+    var last = Array.from(words[words.length - 1])[0];
+    return (first + last).toUpperCase();
+  }
+
+  function token(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  function paletteAt(index) {
+    return {
+      bg: token("--cover-palette-" + index + "-bg"),
+      bg2: token("--cover-palette-" + index + "-bg2"),
+      ink: token("--cover-palette-" + index + "-ink"),
+      accent: token("--cover-palette-" + index + "-accent")
+    };
+  }
+
+  /* Brightness family from its own hash domain, then a palette index inside
+     that field's pool. Field, palette and motif are hashed independently from
+     the same title with distinct domain suffixes, so the choices vary instead
+     of correlating while staying deterministic per title. */
+  function fieldFor(title) {
+    return mix32(fnv1a(title + "#field")) % 100 < LIGHT_FIELD_PERCENT ? "light" : "dark";
+  }
+
+  function palettePoolFor(field) {
+    var pool = [];
+    for (var index = 0; index < PALETTE_COUNT; index += 1) {
+      if (PALETTE_FIELDS[index] === field) pool.push(index);
+    }
+    return pool;
+  }
+
+  function coverFor(title) {
+    var field = fieldFor(title);
+    var pool = palettePoolFor(field);
+    return {
+      field: field,
+      palette: paletteAt(pool[mix32(fnv1a(title + "#field-palette")) % pool.length]),
+      motif: COVER_MOTIFS[mix32(fnv1a(title + "#motif")) % COVER_MOTIFS.length],
+      monogram: monogramFor(title)
+    };
+  }
+
+  function escapeText(value) {
+    return String(value).replace(/[&<>"']/g, function (character) {
+      return {
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      }[character];
+    });
+  }
+
+  /* Three crest motifs. Colour and fill come from the surrounding <g>; each
+     ring/slat only carries its own opacity and stroke width, as in the React
+     component. Built inline to stay inside the single-SVG contract. */
+  function motifMarkup(motif) {
+    var parts = [];
+    if (motif === "rings") {
+      parts.push(
+        '<rect x="' + (CREST_X - 232) + '" y="' + (CREST_Y - 232) + '" width="464" height="464" rx="128" opacity="0.34"/>',
+        '<rect x="' + (CREST_X - 176) + '" y="' + (CREST_Y - 176) + '" width="352" height="352" rx="100" opacity="0.5"/>',
+        '<rect x="' + (CREST_X - 120) + '" y="' + (CREST_Y - 120) + '" width="240" height="240" rx="70" opacity="0.7"/>'
+      );
+    } else if (motif === "orbit") {
+      parts.push(
+        '<circle cx="' + CREST_X + '" cy="' + CREST_Y + '" r="222" opacity="0.3"/>',
+        '<circle cx="' + CREST_X + '" cy="' + CREST_Y + '" r="166" opacity="0.46"/>',
+        '<circle cx="' + CREST_X + '" cy="' + CREST_Y + '" r="110" opacity="0.68"/>'
+      );
+    } else {
+      parts.push(
+        '<g transform="rotate(-18 ' + CREST_X + " " + CREST_Y + ')" stroke-linecap="round">',
+        '<line x1="' + (CREST_X - 190) + '" y1="' + (CREST_Y - 96) + '" x2="' + (CREST_X + 190) + '" y2="' + (CREST_Y - 96) + '" opacity="0.3" stroke-width="30"/>',
+        '<line x1="' + (CREST_X - 214) + '" y1="' + CREST_Y + '" x2="' + (CREST_X + 214) + '" y2="' + CREST_Y + '" opacity="0.46" stroke-width="30"/>',
+        '<line x1="' + (CREST_X - 190) + '" y1="' + (CREST_Y + 96) + '" x2="' + (CREST_X + 190) + '" y2="' + (CREST_Y + 96) + '" opacity="0.68" stroke-width="30"/>',
+        "</g>"
+      );
+    }
+    return parts.join("");
+  }
+
+  /* 600x900 = the 2:3 portrait the artwork pipeline requests. `slice` lets the
+     same artwork fill any slot shape without letterboxing. */
+  function coverMarkup(title) {
+    var spec = coverFor(title);
+    var palette = spec.palette;
+    var glyphSize = Array.from(spec.monogram).length > 1 ? 216 : 268;
+    return {
+      palette: palette,
+      markup:
+        '<svg viewBox="0 0 600 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false">' +
+        '<rect width="600" height="900" fill="' + palette.bg + '"/>' +
+        '<rect x="-170" y="-210" width="580" height="560" rx="150" fill="' + palette.bg2 + '"/>' +
+        '<rect x="330" y="600" width="380" height="380" rx="140" fill="' + palette.bg2 + '" opacity="0.55"/>' +
+        '<g fill="none" stroke="' + palette.accent + '" stroke-width="2.5">' + motifMarkup(spec.motif) + "</g>" +
+        '<text x="' + CREST_X + '" y="' + CREST_Y + '" text-anchor="middle" dominant-baseline="central" fill="' + palette.ink + '" font-family="\'Fredoka\', \'Segoe UI Variable Display\', \'Segoe UI\', system-ui, sans-serif" font-size="' + glyphSize + '" font-weight="600" letter-spacing="-8">' + escapeText(spec.monogram) + "</text>" +
+        '<rect x="28" y="28" width="544" height="844" rx="26" fill="none" stroke="' + palette.ink + '" stroke-opacity="0.14" stroke-width="1.5"/>' +
+        "</svg>"
+    };
+  }
+
+  function paint(art, title, host) {
+    if (!art || !title) return;
+    var cover = coverMarkup(title);
+    art.innerHTML = cover.markup;
+    if (host) {
+      host.style.setProperty("--cover-bg2", cover.palette.bg2);
+      host.style.setProperty("--cover-accent", cover.palette.accent);
+    }
+  }
+
+  function textOf(root, selector) {
+    var node = root.querySelector(selector);
+    return node ? node.textContent.replace(/\s+/g, " ").trim() : "";
+  }
+
+  Array.prototype.forEach.call(
+    document.querySelectorAll(".tile-cell:not(.is-enroll)"),
+    function (cell) {
+      paint(cell.querySelector(".tile-art"), textOf(cell, ".tile-title"), cell.querySelector(".tile"));
+    }
+  );
+
+  Array.prototype.forEach.call(
+    document.querySelectorAll(".detail-cover"),
+    function (cover) {
+      paint(cover.querySelector(".detail-art"), textOf(document, ".detail-title"), cover);
+    }
+  );
+})();
+</script>
+</body>
+</html>
