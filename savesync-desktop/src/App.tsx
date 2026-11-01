@@ -944,11 +944,20 @@ export default function App() {
       const topInset = topbarEl
         ? topbarEl.getBoundingClientRect().bottom + 8
         : TOPBAR_FALLBACK_HEIGHT;
+      // The docked band owns the bottom edge, so the usable area ends at its top
+      // edge. It is passed as a bottom inset, not a shorter viewport: on a short
+      // window a shrunken viewport collapses the floor and ceiling onto the top
+      // bar and pushes the menu through the band. An unmeasured layout (jsdom, or
+      // a band that has not laid out yet) reports 0 and contributes no inset.
+      const dockTop =
+        document.querySelector<HTMLElement>(".dock")?.getBoundingClientRect().top ?? 0;
+      const bottomInset = dockTop > 0 ? window.innerHeight - dockTop : 0;
       const pos = clampMenuPosition(
         point,
         MENU_SIZE,
         { width: window.innerWidth, height: window.innerHeight },
         topInset,
+        bottomInset,
       );
       setMenuPosition(pos);
       // Store the triggering element so Escape can return focus to it.
@@ -1565,29 +1574,20 @@ export default function App() {
     );
   }
 
+  const dirtyCount = games.filter((game) => dirtyGames.has(game.id)).length;
+  const statusText =
+    games.length === 0
+      ? "No games enrolled"
+      : dirtyCount > 0
+        ? `${dirtyCount} game${dirtyCount === 1 ? "" : "s"} with uncaptured changes`
+        : `${games.length} game${games.length === 1 ? "" : "s"} enrolled`;
+
   return (
     <div className="app">
       <header className="topbar">
         <div className="brand">
           <h1 className="brand-name">SaveSync</h1>
         </div>
-
-        <nav className="nav" aria-label="Primary">
-          {NAV_ITEMS.map((item) => (
-            <button
-              key={item.view}
-              type="button"
-              className="nav-btn"
-              aria-current={view === item.view ? "page" : undefined}
-              onClick={() => setView(item.view)}
-            >
-              <span className="nav-icon" aria-hidden="true">
-                <NavGlyph view={item.view} />
-              </span>
-              {item.label}
-            </button>
-          ))}
-        </nav>
 
         <div className="topbar-actions">
           <button
@@ -1663,6 +1663,43 @@ export default function App() {
 
         {view === "settings" && renderSettingsView()}
       </main>
+
+      {/*
+        One docked band owns every primary destination. The status readout is
+        local state only — enrollment count and uncaptured-change count — never a
+        remote-provider claim, because local backup works offline.
+      */}
+      <div className="dock">
+        <p className="dock-status">
+          {/*
+            State, not decoration: the dot exists only while something is
+            uncaptured, driven by the same count as the text beside it, so the
+            two can never disagree. When it is absent the text reflows into the
+            space rather than a placeholder reserving it.
+          */}
+          {dirtyCount > 0 && <span className="dock-dot" aria-hidden="true" />}
+          <span className="dock-status-text">{statusText}</span>
+        </p>
+
+        <span className="dock-divider" aria-hidden="true" />
+
+        <nav className="nav" aria-label="Primary">
+          {NAV_ITEMS.map((item) => (
+            <button
+              key={item.view}
+              type="button"
+              className="nav-btn"
+              aria-current={view === item.view ? "page" : undefined}
+              onClick={() => setView(item.view)}
+            >
+              <span className="nav-icon" aria-hidden="true">
+                <NavGlyph view={item.view} />
+              </span>
+              <span className="nav-label">{item.label}</span>
+            </button>
+          ))}
+        </nav>
+      </div>
 
       {menuPosition && menuGameId ? (
         (() => {

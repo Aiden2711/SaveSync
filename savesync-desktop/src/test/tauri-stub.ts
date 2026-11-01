@@ -40,6 +40,8 @@ type StubWindow = { __TAURI_INTERNALS__?: TauriInternalsStub };
 const DEVICE_ID = "device-test-0001";
 const PRIMARY_GAME_ID = "11111111-1111-4111-8111-111111111111";
 const SECOND_GAME_ID = "22222222-2222-4222-8222-222222222222";
+const THIRD_GAME_ID = "33333333-3333-4333-8333-333333333333";
+const FOURTH_GAME_ID = "44444444-4444-4444-8444-444444444444";
 
 const status: AppStatus = {
   device: "Test workstation",
@@ -76,7 +78,7 @@ const games: Game[] = [
     cover_path: null,
   },
   {
-    id: "33333333-3333-4333-8333-333333333333",
+    id: THIRD_GAME_ID,
     title: "Celeste",
     adapter_type: "emulator",
     enrolled: true,
@@ -86,7 +88,7 @@ const games: Game[] = [
     cover_path: null,
   },
   {
-    id: "44444444-4444-4444-8444-444444444444",
+    id: FOURTH_GAME_ID,
     title: "Stardew Valley",
     adapter_type: "jksv",
     enrolled: true,
@@ -132,6 +134,12 @@ const conflicts: Conflict[] = [
 ];
 
 const dirtyGameIds: string[] = [SECOND_GAME_ID];
+
+/**
+ * Pristine copy of the dirty-id fixture. `seedDirtyGames` replaces the array in
+ * place, so every `installTauriStub` puts the default back.
+ */
+const baselineDirtyGameIds: string[] = [SECOND_GAME_ID];
 
 /**
  * Pristine copy of the game fixtures. Handlers mutate `cover_path` and
@@ -240,9 +248,28 @@ export function stallNextCoverSearch(): () => void {
   return () => release();
 }
 
+/**
+ * Replace the enrolled game list before rendering.
+ *
+ * Call after `installTauriStub`, which restores the default fixtures. Tests use
+ * this for the empty-library and single-game status readouts.
+ */
+export function seedGames(next: Game[]): void {
+  games.length = 0;
+  games.push(...next.map((game) => ({ ...game })));
+}
+
+/** Replace the ids `list_dirty_games` reports before rendering. */
+export function seedDirtyGames(gameIds: string[]): void {
+  dirtyGameIds.length = 0;
+  dirtyGameIds.push(...gameIds);
+}
+
 /** Fixtures are exported so tests can assert against the exact ids returned. */
 export const fixtures = {
   primaryGameId: PRIMARY_GAME_ID,
+  secondGameId: SECOND_GAME_ID,
+  thirdGameId: THIRD_GAME_ID,
   games,
   revisions,
   conflicts,
@@ -385,6 +412,8 @@ export function installTauriStub(): InvokeCall[] {
   // pristine copy: tests must not observe a previous file's cover state.
   games.length = 0;
   games.push(...baselineGames.map((game) => ({ ...game })));
+  dirtyGameIds.length = 0;
+  dirtyGameIds.push(...baselineDirtyGameIds);
   seededCovers.clear();
   coverFetchError = null;
   coverSearchResponse = defaultCoverSearch();

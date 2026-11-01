@@ -304,4 +304,66 @@ describe("clampMenuPosition", () => {
 
     expect(result.x).toBe(8);
   });
+
+  it("keeps the menu's bottom edge above the docked band on a short viewport", () => {
+    // 1024x400 with a 56px band: the band's top edge sits at y = 344.
+    const viewport = { width: 1024, height: 400 };
+    const topInset = 52;
+    const dockTop = 344;
+    const bottomInset = viewport.height - dockTop;
+
+    const result = clampMenuPosition(
+      { x: 900, y: 390 },
+      MENU_SIZE,
+      viewport,
+      topInset,
+      bottomInset,
+    );
+
+    // The floor and the ceiling must not collapse onto the top bar: the menu is
+    // pinned to the lowest row that still clears the band, never through it.
+    expect(result.y).toBeGreaterThanOrEqual(topInset);
+    expect(result.y + MENU_SIZE.height).toBeLessThanOrEqual(dockTop);
+    expect(result.x).toBeLessThanOrEqual(viewport.width - MENU_SIZE.width - 8);
+    expect(result.x).toBeGreaterThanOrEqual(8);
+  });
+
+  it("pins the menu on screen when the band leaves less room than it needs", () => {
+    const viewport = { width: 1024, height: 300 };
+    const topInset = 52;
+    const dockTop = 244;
+
+    const result = clampMenuPosition(
+      { x: 100, y: 290 },
+      MENU_SIZE,
+      viewport,
+      topInset,
+      viewport.height - dockTop,
+    );
+
+    // Space is scarce, so the existing `max(minY, …)` guard wins: the top of the
+    // menu never goes above the bar, and the menu never leaves the viewport.
+    expect(result.y).toBe(topInset);
+    expect(result.y).toBeLessThan(viewport.height);
+  });
+
+  it("treats a missing bottomInset as zero (previous behaviour)", () => {
+    const viewport = { width: 1024, height: 400 };
+    const topInset = 52;
+
+    const previous = clampMenuPosition(
+      { x: 900, y: 390 },
+      MENU_SIZE,
+      viewport,
+      topInset,
+    );
+
+    expect(previous).toEqual(
+      clampMenuPosition({ x: 900, y: 390 }, MENU_SIZE, viewport, topInset, 0),
+    );
+    expect(previous).toEqual({
+      x: viewport.width - MENU_SIZE.width - 8,
+      y: viewport.height - MENU_SIZE.height - 8,
+    });
+  });
 });

@@ -109,9 +109,11 @@ indicator, focus. It must not become the ordinary border of every card.
 
 - **Wordmark:** "SaveSync" in Fredoka 600 with tight tracking. No badge, no monogram tile,
   no tagline next to it.
-- **Top bar:** one row, white surface over `--base`, hairline bottom border. Nav buttons
-  are quiet text+icon, current destination gets a `--surface-2` well and `--ink`.
-  Theme toggle at the far right.
+- **Top bar:** wordmark + theme toggle only; quiet row, white surface over `--base`,
+  hairline bottom border.
+- **Bottom band:** edge-docked full-width strip on `--base-2`, 1px `--line` top border,
+  no shadow, no outer radius; status readout (accent live dot + count) left behind a
+  hairline divider, nav centered, current destination on a `--surface-2` well.
 - **Tiles:** cover art occupies the tile's upper field, edge to edge, `2:3`. Label block
   below on `--surface`: title in Fredoka 600, then adapter and snapshot state in UI sans
   `--ink-2` at 14px. Every game gets the same channel — no promoted "first game" hero.
@@ -119,7 +121,8 @@ indicator, focus. It must not become the ordinary border of every card.
   plus a `--line-strong` border, a focus-ring outline and the check badge — never the
   accent as a border.
 - **Context menu:** right-click (or the `ContextMenu` key / Shift+F10) opens a `role="menu"`
-  at the pointer, clamped to the viewport and below the top bar. It never changes the
+  at the pointer, clamped to the viewport, below the top bar and above the bottom band.
+  It never changes the
   current view. "Open details" is the only item that navigates. Escape returns focus to
   the tile.
 - **Detail view:** cover on the left (`160px`), title and meta beside it, actions at the
@@ -131,11 +134,12 @@ indicator, focus. It must not become the ordinary border of every card.
 ## Cover art
 
 Real artwork is not wired to a provider yet. Until it is, `CoverArt` draws a deterministic
-portrait cover per title: a cool two-tone field, one clipped rounded-square motif, and the
-title's monogram in Fredoka. Palettes are hash-derived and include both light-field and
-dark-field variants, so a library never turns into one flat colour. Covers are decorative
-(`aria-hidden`); the tile button carries the accessible name. When `cover_path` is present
-the component will render that image instead of the generated field.
+portrait cover per title: one hash domain picks a light or dark field first (45% light), a
+second picks a palette within that field from three light and seven dark curated sets, and a
+third picks the clipped crest motif independently, so a library always mixes fields and never
+turns into one flat colour. The title supplies the monogram in Fredoka, and covers are
+decorative (`aria-hidden`) because the tile button carries the accessible name; when
+`cover_path` is present the component renders that image instead of the generated field.
 
 ## Do not
 

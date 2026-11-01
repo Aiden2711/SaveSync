@@ -37,20 +37,31 @@ export const TOPBAR_FALLBACK_HEIGHT = 52;
 
 /**
  * Clamp a pointer position so a menu of `size` stays fully inside `viewport`,
- * never above `topInset` (the bottom edge of the top bar plus a margin).
+ * never above `topInset` (the bottom edge of the top bar plus a margin) and
+ * never closer than `bottomInset` to the bottom edge (the docked band).
  *
- * When the menu cannot fit — a viewport smaller than the menu — the menu is
- * pinned to the top-left margin instead of overflowing the opposite edge.
+ * `bottomInset` defaults to 0, so callers that only know about the top bar keep
+ * the original behaviour. Expressing the band as an inset rather than a shorter
+ * viewport matters on short windows: shrinking the viewport collapses the floor
+ * and the ceiling onto `topInset` and pushes the menu through the band.
+ *
+ * When the menu cannot fit — a viewport smaller than the menu plus its insets —
+ * the menu is pinned to the top-left margin instead of overflowing the opposite
+ * edge.
  */
 export function clampMenuPosition(
   point: Point,
   size: Size,
   viewport: Size,
   topInset: number,
+  bottomInset = 0,
 ): Point {
   const minY = Math.max(topInset, MENU_MARGIN);
   const maxX = Math.max(MENU_MARGIN, viewport.width - size.width - MENU_MARGIN);
-  const maxY = Math.max(minY, viewport.height - size.height - MENU_MARGIN);
+  const maxY = Math.max(
+    minY,
+    viewport.height - bottomInset - size.height - MENU_MARGIN,
+  );
   return {
     x: Math.min(Math.max(point.x, MENU_MARGIN), maxX),
     y: Math.min(Math.max(point.y, minY), maxY),
