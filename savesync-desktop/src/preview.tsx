@@ -12,18 +12,86 @@
  * `?theme=light|dark` selects the theme the same way the app does — the app
  * reads `localStorage["savesync-theme"]` in its `useState` initializer, so the
  * parameter only pre-seeds that key and the document attribute.
+ *
+ * `?provider=google|dropbox|webdav` selects the Cloud view's active provider and
+ * `&state=connected|pending|error` seeds that provider's state, so the
+ * connected/pending/error presentations can be inspected without a real remote.
+ * `&error=…` overrides the seeded error text.
  */
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./styles.css";
-import { fixtures, installTauriStub, seedDirtyGames, seedGames } from "./test/tauri-stub";
+import {
+  fixtures,
+  installTauriStub,
+  seedActiveProvider,
+  seedDirtyGames,
+  seedGames,
+  seedGoogleStatus,
+  seedProviderStatus,
+} from "./test/tauri-stub";
+import type { ProviderKind } from "./types";
 
 const THEME_KEY = "savesync-theme";
+const params = new URLSearchParams(window.location.search);
 
 function requestedTheme(): "light" | "dark" | null {
-  const value = new URLSearchParams(window.location.search).get("theme");
+  const value = params.get("theme");
   return value === "light" || value === "dark" ? value : null;
+}
+
+function requestedProvider(): ProviderKind | null {
+  const value = params.get("provider");
+  return value === "google" || value === "dropbox" || value === "webdav"
+    ? value
+    : null;
+}
+
+/** Non-secret identifier each provider's panel would show once configured. */
+const IDENTIFIERS: Record<ProviderKind, string> = {
+  google: "test-client.apps.googleusercontent.com",
+  dropbox: "test-app-key",
+  webdav: "https://dav.example.com/savesync",
+};
+
+/** Display-only error text; `&error=` overrides it for a specific capture. */
+const ERROR_TEXT: Record<ProviderKind, string> = {
+  google: "Sign-in was cancelled.",
+  dropbox: "The Dropbox app key was rejected.",
+  webdav: "Password rejected",
+};
+
+/**
+ * Seed the Cloud view's provider selection and state. Must run after
+ * `installTauriStub`, which restores the pristine provider fixtures.
+ */
+function seedCloudState(): void {
+  const kind = requestedProvider();
+  if (!kind) return;
+  seedActiveProvider(kind);
+
+  const state = params.get("state");
+  if (state !== "connected" && state !== "pending" && state !== "error") return;
+
+  const shared = {
+    identifier: IDENTIFIERS[kind],
+    configured: true,
+    connected: state === "connected",
+    pending: state === "pending",
+    error: state === "error" ? (params.get("error") ?? ERROR_TEXT[kind]) : null,
+  };
+
+  if (kind === "google") {
+    seedGoogleStatus({
+      client_id: shared.identifier,
+      connected: shared.connected,
+      pending: shared.pending,
+      error: shared.error,
+    });
+  } else {
+    seedProviderStatus(kind, shared);
+  }
 }
 
 const theme = requestedTheme();
@@ -41,6 +109,7 @@ installTauriStub();
 seedGames([...fixtures.games]);
 // More than one dirty id so the dock dot and the tile badges are both visible.
 seedDirtyGames([fixtures.secondGameId, fixtures.thirdGameId]);
+seedCloudState();
 
 const container = document.getElementById("root");
 if (!container) throw new Error("missing #root element");

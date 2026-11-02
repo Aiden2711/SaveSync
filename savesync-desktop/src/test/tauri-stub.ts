@@ -59,6 +59,13 @@ const google: GoogleStatus = {
 };
 
 /**
+ * Pristine Google status. `seedGoogleStatus` mutates the object in place, so
+ * every `installTauriStub` restores this baseline to keep one file's
+ * connected/pending/error choice from leaking into the next.
+ */
+const baselineGoogle: GoogleStatus = { ...google };
+
+/**
  * Provider state for the Cloud view. Reset by `installTauriStub` so one file's
  * choices never leak into another's assertions.
  */
@@ -247,6 +254,26 @@ export function seedDropboxConnected(identifier = "test-app-key"): void {
     pending: false,
     error: null,
   };
+}
+
+/**
+ * Seed a non-Google provider's Cloud-view state before rendering: `pending`
+ * for the OAuth wait, `error` for a rejected credential, `connected` with an
+ * identifier. Google carries its own shape, so it uses `seedGoogleStatus`.
+ */
+export function seedProviderStatus(
+  kind: "dropbox" | "webdav",
+  patch: Partial<Omit<ProviderStatus, "kind">>,
+): void {
+  const base = kind === "dropbox" ? dropboxStatus : webdavStatus;
+  const next: ProviderStatus = { ...base, ...patch, kind };
+  if (kind === "dropbox") dropboxStatus = next;
+  else webdavStatus = next;
+}
+
+/** Seed Google's Cloud-view state (connected, pending, or a surfaced error). */
+export function seedGoogleStatus(patch: Partial<GoogleStatus>): void {
+  Object.assign(google, patch);
 }
 
 /** Choose the provider the stub reports as active before rendering. */
@@ -533,6 +560,7 @@ export function installTauriStub(): InvokeCall[] {
   const calls: InvokeCall[] = [];
   artworkStatus = { configured: false };
   artworkSaveError = null;
+  Object.assign(google, baselineGoogle);
   activeProvider = "google";
   dropboxStatus = defaultDropboxStatus();
   webdavStatus = defaultWebdavStatus();
