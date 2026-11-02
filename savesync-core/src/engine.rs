@@ -99,6 +99,12 @@ impl SaveSyncEngine {
         self.db.transaction(|tx| store::set_setting(tx, key, value))
     }
 
+    /// Remove a non-secret setting, restoring the key's absent state. Used to
+    /// undo a partially applied write; deleting an absent key is a no-op.
+    pub fn delete_setting(&mut self, key: &str) -> Result<()> {
+        self.db.transaction(|tx| store::delete_setting(tx, key))
+    }
+
     pub fn paths(&self) -> &DataPaths {
         &self.paths
     }
@@ -1183,5 +1189,28 @@ mod tests {
                 .cover_path,
             None
         );
+    }
+
+    /// Settings must return to their absent state after a delete, because the
+    /// desktop rollback relies on it to undo a first-ever configuration.
+    #[test]
+    fn settings_round_trip_and_delete_restores_the_absent_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut engine = SaveSyncEngine::open(temp.path().join("data")).unwrap();
+        let key = "webdav_endpoint";
+
+        assert_eq!(engine.setting(key).unwrap(), None);
+        engine
+            .set_setting(key, "https://dav.example.com/savesync")
+            .unwrap();
+        assert_eq!(
+            engine.setting(key).unwrap().as_deref(),
+            Some("https://dav.example.com/savesync")
+        );
+
+        engine.delete_setting(key).unwrap();
+        assert_eq!(engine.setting(key).unwrap(), None);
+        // Deleting an absent key is a no-op, not an error.
+        engine.delete_setting(key).unwrap();
     }
 }

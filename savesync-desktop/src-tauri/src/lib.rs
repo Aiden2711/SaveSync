@@ -664,6 +664,7 @@ impl Inner {
 trait SettingsStore {
     fn get_setting(&self, key: &str) -> savesync_core::Result<Option<String>>;
     fn set_setting(&mut self, key: &str, value: &str) -> savesync_core::Result<()>;
+    fn delete_setting(&mut self, key: &str) -> savesync_core::Result<()>;
 }
 
 impl SettingsStore for SaveSyncEngine {
@@ -673,6 +674,10 @@ impl SettingsStore for SaveSyncEngine {
 
     fn set_setting(&mut self, key: &str, value: &str) -> savesync_core::Result<()> {
         SaveSyncEngine::set_setting(self, key, value)
+    }
+
+    fn delete_setting(&mut self, key: &str) -> savesync_core::Result<()> {
+        SaveSyncEngine::delete_setting(self, key)
     }
 }
 
@@ -857,29 +862,51 @@ fn disconnect_dropbox(state: tauri::State<'_, AppState>) -> Result<ProviderStatu
 /// One settings key, the value it currently holds, and the value to write.
 type SettingChange<'a> = (&'a str, Option<String>, &'a str);
 
-/// Restore the prior value of every settings key a failed write may have
-/// replaced. Best effort: the caller is already returning the original failure,
-/// and a rollback write cannot improve on it without exposing store internals.
-fn restore_settings(settings: &mut dyn SettingsStore, changes: &[SettingChange<'_>]) {
+/// Appended to a persistence error when a rollback could not complete, so the
+/// user knows the stored configuration may no longer match what the UI shows
+/// and has an explicit recovery action. Deliberately generic: it names no store
+/// internals and never echoes a secret.
+const ROLLBACK_INCOMPLETE_HINT: &str = " The previous configuration could not be fully restored; disconnect and reconfigure the provider before syncing.";
+
+/// Restore the prior state of every settings key a failed write replaced.
+///
+/// A previously-present key is written back; a previously-absent key is deleted,
+/// because leaving it behind would persist half of a configuration that never
+/// completed. `Err(())` means at least one restore failed; the caller must not
+/// swallow that, since the persisted state then disagrees with the in-memory one.
+fn restore_settings(
+    settings: &mut dyn SettingsStore,
+    changes: &[SettingChange<'_>],
+) -> Result<(), ()> {
+    let mut complete = true;
     for (key, prior, _) in changes {
-        if let Some(prior) = prior {
-            let _ = settings.set_setting(key, prior);
-        }
+        let restored = match prior {
+            Some(prior) => settings.set_setting(key, prior).is_ok(),
+            None => settings.delete_setting(key).is_ok(),
+        };
+        complete &= restored;
+    }
+    if complete { Ok(()) } else { Err(()) }
+}
+
+/// The terminal error for a failed persist: the original, actionable message,
+/// plus the rollback warning only when the rollback itself failed.
+fn persist_error(original: String, rollback: Result<(), ()>) -> String {
+    match rollback {
+        Ok(()) => original,
+        Err(()) => format!("{original}{ROLLBACK_INCOMPLETE_HINT}"),
     }
 }
 
 /// Persist the WebDAV endpoint and username, then the password.
 ///
 /// Ordering is deliberate: non-secret settings first, the keyring secret last.
-/// A failure at any step restores what it replaced, so a returned error never
-/// leaves a new secret paired with an old endpoint (or the reverse). The caller
-/// updates its in-memory copy only after this succeeds.
-///
-/// A key with no prior value cannot be removed again (the settings table has no
-/// delete path), so a first-ever configuration that fails after the settings
-/// write keeps them. That state has no secret paired with it, so it reads as
-/// configured-but-not-connected rather than as a working connection, and sync
-/// stays disabled.
+/// A failure at any step restores what it replaced — prior values are written
+/// back and keys that did not exist before are deleted — so a returned error
+/// never leaves a new secret paired with a new endpoint. The caller updates its
+/// in-memory copy only after this succeeds, so the UI keeps showing the
+/// pre-change state; if a rollback write also fails, the returned error says so
+/// instead of silently reporting a rollback that did not happen.
 fn persist_webdav_config(
     settings: &mut dyn SettingsStore,
     credentials: &dyn TokenStore,
@@ -905,26 +932,47 @@ fn persist_webdav_config(
         ),
     ];
 
+    // Keys whose write actually succeeded and therefore need undoing. A failed
+    // write does not apply, so it is not retried during rollback.
+    let mut applied: Vec<SettingChange<'_>> = Vec::new();
     for (key, prior, next) in &changes {
         if prior.as_deref() == Some(*next) {
             continue;
         }
         if let Err(error) = settings.set_setting(key, next) {
-            restore_settings(settings, &changes);
-            return Err(stringify(error));
+            return Err(persist_error(
+                stringify(error),
+                restore_settings(settings, &applied),
+            ));
         }
+        applied.push((key, prior.clone(), next));
     }
 
     if stored_password != Some(effective_password) && credentials.save(effective_password).is_err()
     {
-        restore_settings(settings, &changes);
         // A failed save is not proof the previous secret survived, so put it
-        // back explicitly. Either way the resulting state is defined.
-        let _ = match stored_password {
-            Some(prior) => credentials.save(prior),
-            None => credentials.delete(),
+        // back explicitly. `restore_settings` then undoes the non-secret keys,
+        // keeping the two halves consistent.
+        //
+        // Residual risk: this keyring restore is best effort. If the keyring
+        // fails *after* having applied the new secret (its failure semantics are
+        // OS-defined), the persisted state is new-password + old-settings. That
+        // is why the error below is loud rather than the old secret being
+        // assumed intact.
+        let secret_restored = match stored_password {
+            Some(prior) => credentials.save(prior).is_ok(),
+            None => credentials.delete().is_ok(),
         };
-        return Err("Could not save the WebDAV password to the OS keyring.".to_string());
+        let settings_restored = restore_settings(settings, &applied);
+        let rollback = if secret_restored {
+            settings_restored
+        } else {
+            Err(())
+        };
+        return Err(persist_error(
+            "Could not save the WebDAV password to the OS keyring.".to_string(),
+            rollback,
+        ));
     }
 
     Ok(())
@@ -2001,14 +2049,19 @@ mod tests {
         ));
     }
 
-    /// In-memory [`SettingsStore`] with an injectable write failure, so a
-    /// multi-key persist can be exercised without a database.
+    /// In-memory [`SettingsStore`] with injectable write and delete failures, so
+    /// a multi-key persist and its rollback can be exercised without a database.
     struct FakeSettings {
         values: std::collections::HashMap<String, String>,
         /// When set, a write to this key fails with a secret-shaped payload.
         failing_key: Option<&'static str>,
+        /// When set, a delete of this key fails, which makes the rollback of a
+        /// previously-absent key impossible.
+        failing_delete_key: Option<&'static str>,
         /// Every successful write, in order.
         writes: Vec<(String, String)>,
+        /// Every successful delete, in order.
+        deletes: Vec<String>,
     }
 
     impl FakeSettings {
@@ -2019,7 +2072,9 @@ mod tests {
                     .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
                     .collect(),
                 failing_key: None,
+                failing_delete_key: None,
                 writes: Vec::new(),
+                deletes: Vec::new(),
             }
         }
 
@@ -2044,6 +2099,76 @@ mod tests {
             self.writes.push((key.to_string(), value.to_string()));
             self.values.insert(key.to_string(), value.to_string());
             Ok(())
+        }
+
+        fn delete_setting(&mut self, key: &str) -> savesync_core::Result<()> {
+            if self.failing_delete_key == Some(key) {
+                return Err(savesync_core::Error::InvalidState(
+                    "settings delete failed".into(),
+                ));
+            }
+            self.deletes.push(key.to_string());
+            self.values.remove(key);
+            Ok(())
+        }
+    }
+
+    /// Fails only when asked to store the new password, so a keyring failure
+    /// still allows a clean rollback and the plain error survives unchanged.
+    struct FailsNewPasswordStore;
+
+    impl TokenStore for FailsNewPasswordStore {
+        fn load(&self) -> savesync_core::Result<Option<String>> {
+            Ok(None)
+        }
+        fn save(&self, token: &str) -> savesync_core::Result<()> {
+            if token == DAV_SENTINEL_PASSWORD {
+                return Err(savesync_core::Error::Auth("keyring payload: leaked".into()));
+            }
+            Ok(())
+        }
+        fn delete(&self) -> savesync_core::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A keyring that applies the new secret and *then* reports the write as
+    /// failed, with the restore attempt failing too. The real keyring's failure
+    /// semantics are OS-defined, so this is the worst realistic case: the new
+    /// secret is stored while the command reports an error.
+    struct WriteThenFailStore {
+        token: std::sync::Mutex<Option<String>>,
+        saves: std::sync::Mutex<usize>,
+    }
+
+    impl WriteThenFailStore {
+        fn new(token: Option<&str>) -> Self {
+            Self {
+                token: std::sync::Mutex::new(token.map(str::to_string)),
+                saves: std::sync::Mutex::new(0),
+            }
+        }
+
+        fn token(&self) -> Option<String> {
+            self.token.lock().expect("token mutex").clone()
+        }
+    }
+
+    impl TokenStore for WriteThenFailStore {
+        fn load(&self) -> savesync_core::Result<Option<String>> {
+            Ok(self.token())
+        }
+        fn save(&self, token: &str) -> savesync_core::Result<()> {
+            let mut saves = self.saves.lock().expect("saves mutex");
+            *saves += 1;
+            if *saves == 1 {
+                // The write lands, then the backend reports an error.
+                *self.token.lock().expect("token mutex") = Some(token.to_string());
+            }
+            Err(savesync_core::Error::Auth("keyring payload: leaked".into()))
+        }
+        fn delete(&self) -> savesync_core::Result<()> {
+            Err(savesync_core::Error::Auth("keyring payload: leaked".into()))
         }
     }
 
@@ -2087,7 +2212,10 @@ mod tests {
             (WEBDAV_ENDPOINT_SETTING, "https://old.example.com/savesync"),
             (WEBDAV_USERNAME_SETTING, "old-user"),
         ]);
-        let credentials = FailingStore;
+        // Fails the forward save but allows the restore, so this covers the
+        // "rollback succeeded" branch; the all-failing store is covered by
+        // `webdav_keyring_write_then_error_surfaces_the_residual...`.
+        let credentials = FailsNewPasswordStore;
 
         let error = persist_webdav_config(
             &mut settings,
@@ -2110,6 +2238,140 @@ mod tests {
             Some("https://old.example.com/savesync")
         );
         assert_eq!(settings.value(WEBDAV_USERNAME_SETTING), Some("old-user"));
+    }
+
+    /// A first-ever configuration has no prior value to write back, so the
+    /// rollback must delete the key it already stored instead of leaving half of
+    /// an unsaved configuration behind.
+    #[test]
+    fn webdav_first_time_settings_failure_removes_the_written_key() {
+        let mut settings = FakeSettings::with(&[]);
+        // The second key fails, so the first one is already written.
+        settings.failing_key = Some(WEBDAV_USERNAME_SETTING);
+        let credentials: Arc<dyn TokenStore> = Arc::new(MemoryTokenStore::default());
+
+        let error = persist_webdav_config(
+            &mut settings,
+            &*credentials,
+            "https://new.example.com/savesync",
+            "new-user",
+            DAV_SENTINEL_PASSWORD,
+            None,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("settings write failed"));
+        // The rollback itself succeeded, so no rollback warning is added.
+        assert!(!error.contains("could not be fully restored"));
+        assert_eq!(settings.value(WEBDAV_ENDPOINT_SETTING), None);
+        assert_eq!(settings.value(WEBDAV_USERNAME_SETTING), None);
+        assert_eq!(settings.deletes, vec![WEBDAV_ENDPOINT_SETTING.to_string()]);
+        // The settings step failed before the secret was touched.
+        assert_eq!(credentials.load().unwrap(), None);
+    }
+
+    /// A rollback that cannot undo the earlier write must say so. The caller's
+    /// in-memory copy is untouched, so the UI still shows the pre-change state;
+    /// the error is what tells the user the stored state may disagree.
+    #[test]
+    fn webdav_rollback_failure_is_reported_instead_of_swallowed() {
+        let mut settings = FakeSettings::with(&[]);
+        settings.failing_key = Some(WEBDAV_USERNAME_SETTING);
+        // The only written key cannot be removed again.
+        settings.failing_delete_key = Some(WEBDAV_ENDPOINT_SETTING);
+        let credentials: Arc<dyn TokenStore> = Arc::new(MemoryTokenStore::default());
+
+        let error = persist_webdav_config(
+            &mut settings,
+            &*credentials,
+            "https://new.example.com/savesync",
+            "new-user",
+            DAV_SENTINEL_PASSWORD,
+            None,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("settings write failed"));
+        assert!(error.contains("could not be fully restored"));
+        assert!(error.contains("disconnect and reconfigure"));
+        assert!(!error.contains(DAV_SENTINEL_PASSWORD));
+        // This is exactly why the error must be loud: the write is still there.
+        assert_eq!(
+            settings.value(WEBDAV_ENDPOINT_SETTING),
+            Some("https://new.example.com/savesync")
+        );
+        assert_eq!(credentials.load().unwrap(), None);
+    }
+
+    /// First-ever configuration plus a keyring failure: nothing may survive,
+    /// because a stored endpoint with no secret is not a configuration.
+    #[test]
+    fn webdav_first_time_keyring_failure_removes_both_settings() {
+        let mut settings = FakeSettings::with(&[]);
+        let credentials = FailsNewPasswordStore;
+
+        let error = persist_webdav_config(
+            &mut settings,
+            &credentials,
+            "https://new.example.com/savesync",
+            "new-user",
+            DAV_SENTINEL_PASSWORD,
+            None,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            "Could not save the WebDAV password to the OS keyring."
+        );
+        assert_eq!(settings.value(WEBDAV_ENDPOINT_SETTING), None);
+        assert_eq!(settings.value(WEBDAV_USERNAME_SETTING), None);
+        assert_eq!(
+            settings.deletes,
+            vec![
+                WEBDAV_ENDPOINT_SETTING.to_string(),
+                WEBDAV_USERNAME_SETTING.to_string()
+            ]
+        );
+    }
+
+    /// Residual risk, documented by test: if the keyring applies the new secret
+    /// and only then reports failure — and refuses the restore — the persisted
+    /// state is new-password + old-settings. The command cannot fix that (the
+    /// real keyring's failure semantics are OS-defined), so it must report a
+    /// loud, secret-free error that tells the user to reconfigure.
+    #[test]
+    fn webdav_keyring_write_then_error_surfaces_the_residual_without_leaking_the_secret() {
+        let mut settings = FakeSettings::with(&[
+            (WEBDAV_ENDPOINT_SETTING, "https://old.example.com/savesync"),
+            (WEBDAV_USERNAME_SETTING, "old-user"),
+        ]);
+        let credentials = WriteThenFailStore::new(Some("old-password"));
+
+        let error = persist_webdav_config(
+            &mut settings,
+            &credentials,
+            "https://new.example.com/savesync",
+            "new-user",
+            DAV_SENTINEL_PASSWORD,
+            Some("old-password"),
+        )
+        .unwrap_err();
+
+        assert!(!error.contains(DAV_SENTINEL_PASSWORD));
+        assert!(!error.contains("leaked"));
+        // Distinguishes "saved but not rolled back" from a clean failure.
+        assert!(error.starts_with("Could not save the WebDAV password to the OS keyring."));
+        assert!(error.contains("could not be fully restored"));
+        assert!(error.contains("disconnect and reconfigure"));
+
+        // Known residual: the settings were restored, the secret was not.
+        assert_eq!(
+            settings.value(WEBDAV_ENDPOINT_SETTING),
+            Some("https://old.example.com/savesync")
+        );
+        assert_eq!(settings.value(WEBDAV_USERNAME_SETTING), Some("old-user"));
+        assert_eq!(credentials.token().as_deref(), Some(DAV_SENTINEL_PASSWORD));
     }
 
     #[test]

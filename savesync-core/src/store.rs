@@ -46,6 +46,13 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Remove a setting, restoring the key's absent state. Deleting a key that does
+/// not exist is a no-op, so a rollback may safely target any key.
+pub fn delete_setting(conn: &Connection, key: &str) -> Result<()> {
+    conn.execute("DELETE FROM settings WHERE key = ?1", [key])?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Devices
 // ---------------------------------------------------------------------------
