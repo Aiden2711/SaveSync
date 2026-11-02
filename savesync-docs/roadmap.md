@@ -99,3 +99,7 @@ Not scheduled phases. Each item is opt-in, additive, and must not weaken local b
 - [ ] **Controller-aware prompts**:
   - When a gamepad is connected, show the matching button glyphs (A/B/Y) in dialogs and menus, while keeping full keyboard and mouse parity.
   - Detection only; no gameplay input handling.
+- [ ] **S3-compatible provider (design Stage 3)**:
+  - Last unimplemented provider from `savesync-docs/2026-10-21-cloud-providers-webdav-s3-dropbox-design.md`: Google Drive, WebDAV, and Dropbox now ship, leaving S3 with its hand-rolled SigV4 signer and `PutObject` / multipart upload path on the same `SyncProvider` shape.
+  - Reuse the shared provider runtime and retry/classification machinery; pin the signer to the published AWS SigV4 test vectors before the provider is wired up.
+  - Credentials stay in the OS keyring, and the provider must remain optional so a slow or unavailable endpoint never blocks local backup or restore.
