@@ -14,29 +14,50 @@ use std::time::Duration;
 use crate::error::{Error, Result};
 
 /// HTTP methods used by the providers.
+///
+/// `Propfind`, `Mkcol`, and `Move` are the WebDAV extensions (RFC 4918);
+/// `Head` is used for cheap existence checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HttpMethod {
     Get,
+    Head,
     Post,
     Put,
     Patch,
     Delete,
+    Propfind,
+    Mkcol,
+    Move,
 }
 
 impl HttpMethod {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Get => "GET",
+            Self::Head => "HEAD",
             Self::Post => "POST",
             Self::Put => "PUT",
             Self::Patch => "PATCH",
             Self::Delete => "DELETE",
+            Self::Propfind => "PROPFIND",
+            Self::Mkcol => "MKCOL",
+            Self::Move => "MOVE",
         }
     }
 }
 
+/// Ceiling for any response body that is buffered in memory.
+///
+/// Buffered responses are always small metadata: an OAuth token envelope, a
+/// JSON manifest or revision object, a WebDAV `PROPFIND` listing, a Dropbox
+/// metadata reply, or an error body. Blobs are streamed to disk instead. The
+/// cap equals [`crate::provider_runtime::SMALL_OBJECT_LIMIT`], which is already
+/// far above any legitimate metadata object, yet bounds what a hostile server
+/// can make the client allocate for one request.
+pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
 /// Request body, either in memory or a range of a file (for resumable uploads).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum RequestBody {
     Bytes(Arc<Vec<u8>>),
     FileRange {
@@ -44,6 +65,29 @@ pub enum RequestBody {
         offset: u64,
         length: u64,
     },
+}
+
+/// Manual `Debug` that never prints body bytes.
+///
+/// OAuth token forms (`refresh_token=…`, `client_secret=…`) travel as
+/// [`RequestBody::Bytes`]; a derived implementation would copy them into any
+/// log or panic message that formats a request.
+impl std::fmt::Debug for RequestBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bytes(bytes) => write!(f, "Bytes(<{} bytes>)", bytes.len()),
+            Self::FileRange {
+                path,
+                offset,
+                length,
+            } => f
+                .debug_struct("FileRange")
+                .field("path", path)
+                .field("offset", offset)
+                .field("length", length)
+                .finish(),
+        }
+    }
 }
 
 impl RequestBody {
@@ -76,7 +120,7 @@ impl RequestBody {
 }
 
 /// One HTTP request.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HttpRequest {
     pub method: HttpMethod,
     pub url: String,
@@ -138,6 +182,51 @@ impl HttpRequest {
     }
 }
 
+/// Header names whose values are credentials or credential-bearing arguments.
+const SENSITIVE_HEADERS: [&str; 5] = [
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+    "dropbox-api-arg",
+];
+
+fn is_sensitive_header(name: &str) -> bool {
+    SENSITIVE_HEADERS
+        .iter()
+        .any(|sensitive| name.eq_ignore_ascii_case(sensitive))
+}
+
+/// Manual `Debug` that prints header names but redacts credential values and
+/// never renders body bytes.
+///
+/// A derived implementation would print `Authorization: Bearer …`,
+/// `Dropbox-API-Arg: {...}`, and the raw OAuth form body.
+impl std::fmt::Debug for HttpRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let headers: Vec<(&str, &str)> = self
+            .headers
+            .iter()
+            .map(|(name, value)| {
+                let value = if is_sensitive_header(name) {
+                    "[redacted]"
+                } else {
+                    value.as_str()
+                };
+                (name.as_str(), value)
+            })
+            .collect();
+        f.debug_struct("HttpRequest")
+            .field("method", &self.method)
+            .field("url", &self.url)
+            .field("headers", &headers)
+            .field("body", &self.body)
+            .field("download_to", &self.download_to)
+            .field("max_download_bytes", &self.max_download_bytes)
+            .finish()
+    }
+}
+
 /// One HTTP response with a buffered body (unless the request streamed to disk).
 #[derive(Debug, Clone)]
 pub struct HttpResponse {
@@ -196,6 +285,14 @@ impl ReqwestTransport {
     }
 }
 
+/// Build a WebDAV extension method such as `PROPFIND`.
+///
+/// `reqwest::Method` accepts arbitrary tokens, so no per-method constants are
+/// needed; the names come from [`HttpMethod::as_str`] and are always valid.
+fn extension_method(name: &str) -> reqwest::Method {
+    reqwest::Method::from_bytes(name.as_bytes()).expect("HTTP method names are valid tokens")
+}
+
 impl Default for ReqwestTransport {
     fn default() -> Self {
         Self::new(Duration::from_secs(120)).expect("reqwest client configuration is valid")
@@ -206,10 +303,14 @@ impl HttpTransport for ReqwestTransport {
     fn execute(&self, request: &HttpRequest) -> Result<HttpResponse> {
         let method = match request.method {
             HttpMethod::Get => reqwest::Method::GET,
+            HttpMethod::Head => reqwest::Method::HEAD,
             HttpMethod::Post => reqwest::Method::POST,
             HttpMethod::Put => reqwest::Method::PUT,
             HttpMethod::Patch => reqwest::Method::PATCH,
             HttpMethod::Delete => reqwest::Method::DELETE,
+            HttpMethod::Propfind | HttpMethod::Mkcol | HttpMethod::Move => {
+                extension_method(request.method.as_str())
+            }
         };
 
         let mut builder = self
@@ -273,11 +374,7 @@ impl HttpTransport for ReqwestTransport {
             file.flush().map_err(|e| Error::io(path, e))?;
             Vec::new()
         } else {
-            let mut body = Vec::new();
-            response
-                .read_to_end(&mut body)
-                .map_err(|error| Error::Network(error.to_string()))?;
-            body
+            read_body_bounded(&mut response, MAX_RESPONSE_BYTES)?
         };
 
         Ok(HttpResponse {
@@ -291,12 +388,34 @@ impl HttpTransport for ReqwestTransport {
 /// Message used when a download streams past its configured byte cap.
 const DOWNLOAD_LIMIT_EXCEEDED: &str = "download exceeded the configured size limit";
 
+/// Read a buffered response body, refusing anything over `limit` bytes.
+///
+/// The read stops one byte past the cap, so an oversized body is detected
+/// without ever allocating more than `limit + 1` bytes. A response that
+/// exceeds the cap is a protocol violation by the peer, reported as
+/// [`Error::Network`] so it is treated like any other transport failure.
+fn read_body_bounded(reader: impl Read, limit: usize) -> Result<Vec<u8>> {
+    let mut body = Vec::new();
+    reader
+        .take(limit.saturating_add(1) as u64)
+        .read_to_end(&mut body)
+        .map_err(|error| Error::Network(error.to_string()))?;
+    if body.len() > limit {
+        return Err(Error::Network(format!(
+            "response body exceeded the {limit} byte limit"
+        )));
+    }
+    Ok(body)
+}
+
 /// Copy at most `limit` bytes from `reader` into `file`.
 ///
 /// Returns the number of bytes written. As soon as the source yields more than
 /// `limit` bytes, copying stops *before* the surplus is written and
-/// [`Error::InvalidState`] is returned, so an untrusted response can never put
-/// more than `limit` bytes on disk.
+/// [`Error::Network`] is returned, so an untrusted response can never put more
+/// than `limit` bytes on disk. The over-limit case is a peer protocol
+/// violation, not an internal invariant break, so it maps to the transport
+/// taxonomy; the caller removes the partial file.
 fn copy_bounded(reader: &mut impl Read, file: &mut File, limit: u64) -> Result<u64> {
     const CHUNK_BYTES: usize = 64 * 1024;
 
@@ -309,7 +428,7 @@ fn copy_bounded(reader: &mut impl Read, file: &mut File, limit: u64) -> Result<u
         }
         let chunk = read as u64;
         if written.saturating_add(chunk) > limit {
-            return Err(Error::InvalidState(DOWNLOAD_LIMIT_EXCEEDED.to_string()));
+            return Err(Error::Network(DOWNLOAD_LIMIT_EXCEEDED.to_string()));
         }
         file.write_all(&buffer[..read]).map_err(Error::from)?;
         written += chunk;
@@ -399,15 +518,32 @@ pub fn is_retryable_status(status: u16, body: &[u8]) -> bool {
 pub fn execute_with_retry(
     transport: &dyn HttpTransport,
     policy: &RetryPolicy,
+    build: impl FnMut() -> HttpRequest,
+) -> Result<HttpResponse> {
+    execute_with_retry_classified(transport, policy, build, |response| {
+        is_retryable_status(response.status, &response.body)
+    })
+}
+
+/// [`execute_with_retry`] with a caller-supplied retryability predicate.
+///
+/// Providers whose vendors signal throttling differently (a WebDAV server with
+/// no quota body, an S3 `SlowDown`, a Dropbox `too_many_requests`) pass their
+/// own predicate instead of duplicating the attempt cap, equal jitter, and
+/// `Retry-After` handling. Everything else is identical, including counting a
+/// transport failure as an attempt.
+pub fn execute_with_retry_classified(
+    transport: &dyn HttpTransport,
+    policy: &RetryPolicy,
     mut build: impl FnMut() -> HttpRequest,
+    is_retryable: impl Fn(&HttpResponse) -> bool,
 ) -> Result<HttpResponse> {
     let max_attempts = policy.max_attempts.max(1);
     for attempt in 1..=max_attempts {
         let request = build();
         match transport.execute(&request) {
             Ok(response) => {
-                let retryable = is_retryable_status(response.status, &response.body);
-                if retryable && attempt < max_attempts {
+                if is_retryable(&response) && attempt < max_attempts {
                     let delay = retry_after(&response)
                         .unwrap_or_else(|| policy.delay(attempt))
                         .min(policy.max_delay);
@@ -485,7 +621,7 @@ mod tests {
 
         let error = copy_bounded(&mut reader, &mut file, 1024).unwrap_err();
 
-        assert!(matches!(error, Error::InvalidState(_)));
+        assert!(matches!(error, Error::Network(_)));
         assert!(format!("{error}").contains("size limit"));
 
         drop(file);
@@ -494,6 +630,49 @@ mod tests {
             written <= 1024,
             "wrote {written} bytes to disk despite a 1024 byte cap"
         );
+    }
+
+    #[test]
+    fn read_body_bounded_accepts_bodies_under_the_limit() {
+        let body = read_body_bounded(&mut std::io::Cursor::new(b"payload".to_vec()), 4096).unwrap();
+        assert_eq!(body, b"payload");
+
+        // A body exactly at the cap is still a complete response.
+        let exact = read_body_bounded(&mut std::io::Cursor::new(vec![1u8; 64]), 64).unwrap();
+        assert_eq!(exact.len(), 64);
+    }
+
+    #[test]
+    fn read_body_bounded_refuses_bodies_over_the_limit() {
+        let error = read_body_bounded(&mut std::io::Cursor::new(vec![1u8; 65]), 64).unwrap_err();
+        assert!(matches!(error, Error::Network(_)));
+
+        // The reader is not drained past the cap: an oversized body costs at
+        // most `limit + 1` bytes of allocation.
+        let mut reader = std::io::Cursor::new(vec![1u8; 1024]);
+        let _ = read_body_bounded(&mut reader, 16).unwrap_err();
+        assert!(reader.position() <= 17);
+    }
+
+    #[test]
+    fn request_debug_never_prints_credentials_or_body_bytes() {
+        let request = HttpRequest::new(
+            HttpMethod::Post,
+            "https://api.dropboxapi.test/2/files/download",
+        )
+        .header("Authorization", "Bearer super-secret-token")
+        .header("Dropbox-API-Arg", r#"{"path":"/secret/path"}"#)
+        .header("Content-Type", "application/octet-stream")
+        .body(RequestBody::bytes(b"refresh_token=body-secret".to_vec()));
+
+        let rendered = format!("{request:?}");
+
+        assert!(!rendered.contains("super-secret-token"), "{rendered}");
+        assert!(!rendered.contains("/secret/path"), "{rendered}");
+        assert!(!rendered.contains("body-secret"), "{rendered}");
+        assert!(rendered.contains("[redacted]"), "{rendered}");
+        // Non-sensitive context stays visible, so the log is still useful.
+        assert!(rendered.contains("application/octet-stream"), "{rendered}");
     }
 
     #[test]

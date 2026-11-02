@@ -11,6 +11,15 @@ use crate::error::{Error, Result};
 const DEFAULT_SERVICE: &str = "savesync";
 const DEFAULT_ACCOUNT: &str = "google-drive-refresh-token";
 
+/// Keyring service every SaveSync credential is stored under.
+pub const SERVICE: &str = DEFAULT_SERVICE;
+/// Google Drive refresh token account (the original entry).
+pub const GOOGLE_ACCOUNT: &str = DEFAULT_ACCOUNT;
+/// Dropbox refresh token account.
+pub const DROPBOX_ACCOUNT: &str = "dropbox-refresh-token";
+/// WebDAV account. Holds the HTTP Basic password, never a token.
+pub const WEBDAV_ACCOUNT: &str = "webdav-password";
+
 /// Persistence interface for the Google refresh token.
 pub trait TokenStore: Send + Sync {
     fn load(&self) -> Result<Option<String>>;
@@ -136,5 +145,49 @@ mod tests {
         let store = MemoryTokenStore::default();
         assert!(store.save("   ").is_err());
         assert_eq!(store.load().unwrap(), None);
+    }
+
+    /// Each provider gets its own keyring item, so one credential can never
+    /// overwrite another's. This exercises the account names the desktop shell
+    /// wires into separate [`KeyringTokenStore`]s.
+    #[test]
+    fn provider_accounts_round_trip_independently() {
+        let accounts = [GOOGLE_ACCOUNT, DROPBOX_ACCOUNT, WEBDAV_ACCOUNT];
+
+        for (index, account) in accounts.iter().enumerate() {
+            for other in &accounts[index + 1..] {
+                assert_ne!(account, other, "account names must be distinct");
+            }
+            assert!(!account.is_empty());
+        }
+
+        let stores: Vec<MemoryTokenStore> = accounts
+            .iter()
+            .map(|_| MemoryTokenStore::default())
+            .collect();
+
+        for (store, account) in stores.iter().zip(accounts) {
+            assert_eq!(store.load().unwrap(), None);
+            store.save(&format!("secret-for-{account}")).unwrap();
+        }
+
+        for (store, account) in stores.iter().zip(accounts) {
+            assert_eq!(
+                store.load().unwrap().as_deref(),
+                Some(format!("secret-for-{account}").as_str())
+            );
+        }
+
+        // Deleting one leaves every other provider's credential untouched.
+        stores[1].delete().unwrap();
+        assert_eq!(stores[1].load().unwrap(), None);
+        assert_eq!(
+            stores[0].load().unwrap().as_deref(),
+            Some(format!("secret-for-{GOOGLE_ACCOUNT}").as_str())
+        );
+        assert_eq!(
+            stores[2].load().unwrap().as_deref(),
+            Some(format!("secret-for-{WEBDAV_ACCOUNT}").as_str())
+        );
     }
 }

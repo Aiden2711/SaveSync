@@ -1,9 +1,10 @@
-//! OAuth 2.0 PKCE for Google Drive.
+//! OAuth 2.0 PKCE for Google Drive and Dropbox.
 //!
-//! SaveSync only requests `drive.file`, which grants access to files the app
-//! itself created. The refresh token is returned to the caller so the desktop
-//! layer can persist it in the OS keyring; this module never writes secrets to
-//! disk.
+//! SaveSync only requests the narrowest scope each vendor offers for app-owned
+//! files: `drive.file` for Drive and the `files.content.*`/`files.metadata.read`
+//! set for a Dropbox app folder. The refresh token is returned to the caller so
+//! the desktop layer can persist it in the OS keyring; this module never writes
+//! secrets to disk.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -18,17 +19,29 @@ use crate::error::{Error, Result};
 use crate::http::{
     HttpMethod, HttpRequest, HttpTransport, RequestBody, RetryPolicy, execute_with_retry,
 };
+use crate::provider_runtime::redact_error_text;
 
 /// Minimal, non-sensitive scope: only files created or opened by SaveSync.
 pub const DRIVE_FILE_SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
 pub const GOOGLE_AUTH_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 pub const GOOGLE_TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
+pub const DROPBOX_AUTH_ENDPOINT: &str = "https://www.dropbox.com/oauth2/authorize";
+pub const DROPBOX_TOKEN_ENDPOINT: &str = "https://www.dropbox.com/oauth2/token";
+
+/// Scopes SaveSync requests from a Dropbox app. App-folder access is a content
+/// level on the app, not a scope, so these three cover read, write, and listing
+/// of SaveSync's own objects and nothing outside the app folder.
+pub const DROPBOX_SCOPES: [&str; 3] = [
+    "files.content.write",
+    "files.content.read",
+    "files.metadata.read",
+];
 
 /// Refresh the access token this many seconds before it expires.
 const EXPIRY_SKEW: Duration = Duration::from_secs(60);
 const DEFAULT_TOKEN_LIFETIME: Duration = Duration::from_secs(3600);
 
-/// OAuth client configuration (a Google "Desktop app" client).
+/// OAuth client configuration (a Google "Desktop app" client or a Dropbox app).
 #[derive(Debug, Clone)]
 pub struct OAuthConfig {
     pub client_id: String,
@@ -37,6 +50,16 @@ pub struct OAuthConfig {
     pub auth_endpoint: String,
     pub token_endpoint: String,
     pub scopes: Vec<String>,
+    /// Short vendor name used in user-facing flow messages ("Google").
+    pub service_name: String,
+    /// Sentence the loopback completion page shows on success.
+    pub connected_message: String,
+    /// Vendor-specific authorization-endpoint query pairs, appended in order.
+    ///
+    /// Google needs `access_type`/`prompt`/`include_granted_scopes`; Dropbox
+    /// needs `token_access_type=offline`. Keeping the list per provider leaves
+    /// each vendor's consent URL exactly as that vendor documents it.
+    pub auth_params: Vec<(String, String)>,
 }
 
 impl OAuthConfig {
@@ -48,6 +71,40 @@ impl OAuthConfig {
             auth_endpoint: GOOGLE_AUTH_ENDPOINT.to_string(),
             token_endpoint: GOOGLE_TOKEN_ENDPOINT.to_string(),
             scopes: vec![DRIVE_FILE_SCOPE.to_string()],
+            service_name: "Google".to_string(),
+            connected_message:
+                "Google Drive is connected. You can close this window and return to SaveSync."
+                    .to_string(),
+            auth_params: vec![
+                ("access_type".to_string(), "offline".to_string()),
+                // Ensure a refresh token is issued on first consent.
+                ("prompt".to_string(), "consent".to_string()),
+                ("include_granted_scopes".to_string(), "true".to_string()),
+            ],
+        }
+    }
+
+    /// Dropbox configuration for an app with app-folder access.
+    ///
+    /// `token_access_type=offline` is what makes the code exchange return a
+    /// refresh token; Dropbox issues no client secret for PKCE apps, so the
+    /// refresh request omits `client_secret` exactly as the documentation
+    /// requires.
+    pub fn dropbox(app_key: impl Into<String>) -> Self {
+        Self {
+            client_id: app_key.into(),
+            client_secret: None,
+            auth_endpoint: DROPBOX_AUTH_ENDPOINT.to_string(),
+            token_endpoint: DROPBOX_TOKEN_ENDPOINT.to_string(),
+            scopes: DROPBOX_SCOPES
+                .iter()
+                .map(|scope| scope.to_string())
+                .collect(),
+            service_name: "Dropbox".to_string(),
+            connected_message:
+                "Dropbox is connected. You can close this window and return to SaveSync."
+                    .to_string(),
+            auth_params: vec![("token_access_type".to_string(), "offline".to_string())],
         }
     }
 
@@ -152,7 +209,7 @@ impl TokenProvider for StaticToken {
     }
 }
 
-/// Build the browser URL for Google's consent screen.
+/// Build the browser URL for a vendor's consent screen.
 pub fn authorization_url(
     config: &OAuthConfig,
     redirect_uri: &str,
@@ -170,11 +227,10 @@ pub fn authorization_url(
             .append_pair("scope", &config.scopes.join(" "))
             .append_pair("code_challenge", &pkce.challenge)
             .append_pair("code_challenge_method", "S256")
-            .append_pair("state", state)
-            .append_pair("access_type", "offline")
-            // Ensure a refresh token is issued on first consent.
-            .append_pair("prompt", "consent")
-            .append_pair("include_granted_scopes", "true");
+            .append_pair("state", state);
+        for (name, value) in &config.auth_params {
+            query.append_pair(name, value);
+        }
     }
     Ok(url.into())
 }
@@ -252,6 +308,12 @@ fn request_tokens(
     Ok(tokens)
 }
 
+/// Human-readable reason for a failed token request, scrubbed and truncated.
+///
+/// A vendor may echo the request back in `error_description` (for example
+/// `bad refresh_token=<value>`), so the text passes through
+/// [`redact_error_text`] before it can reach an [`Error::Auth`] message, a log,
+/// or the UI. Truncation happens after redaction for the same reason.
 fn describe_token_error(body: &[u8]) -> String {
     #[derive(Deserialize)]
     struct ErrorBody {
@@ -259,17 +321,27 @@ fn describe_token_error(body: &[u8]) -> String {
         error_description: Option<String>,
     }
     match serde_json::from_slice::<ErrorBody>(body) {
-        Ok(parsed) => parsed
-            .error_description
-            .or(parsed.error)
-            .unwrap_or_else(|| "token request failed".into()),
-        Err(_) => format!(
-            "token request failed: {}",
-            String::from_utf8_lossy(body)
-                .chars()
-                .take(200)
-                .collect::<String>()
-        ),
+        Ok(parsed) => {
+            let text = redact_error_text(
+                &parsed
+                    .error_description
+                    .or(parsed.error)
+                    .unwrap_or_else(|| "token request failed".into()),
+            );
+            if text.is_empty() {
+                "token request failed".into()
+            } else {
+                text
+            }
+        }
+        Err(_) => {
+            let text = redact_error_text(&String::from_utf8_lossy(body));
+            if text.is_empty() {
+                "token request failed".into()
+            } else {
+                format!("token request failed: {text}")
+            }
+        }
     }
 }
 
@@ -278,12 +350,19 @@ struct CachedToken {
     expires_at: Instant,
 }
 
-/// Manages refresh and caching for a Google OAuth client.
+/// Manages refresh and caching for one OAuth client.
+///
+/// Refreshes are single-flight: `grant_type=refresh_token` is issued under a
+/// mutex, so concurrent callers collapse into one network request instead of
+/// racing each other. A [`TokenProvider::refresh`] call is always forced (the
+/// caller has just seen a `401`); [`TokenProvider::access_token`] re-checks the
+/// cache after taking the gate, which is what collapses the stampede.
 pub struct OAuthTokenManager {
     config: OAuthConfig,
     transport: std::sync::Arc<dyn HttpTransport>,
     refresh_token: Mutex<Option<String>>,
     cached: Mutex<Option<CachedToken>>,
+    refresh_lock: Mutex<()>,
 }
 
 impl OAuthTokenManager {
@@ -297,6 +376,7 @@ impl OAuthTokenManager {
             transport,
             refresh_token: Mutex::new(Some(refresh_token.into())),
             cached: Mutex::new(None),
+            refresh_lock: Mutex::new(()),
         }
     }
 
@@ -326,19 +406,18 @@ impl OAuthTokenManager {
     pub fn transport(&self) -> &std::sync::Arc<dyn HttpTransport> {
         &self.transport
     }
-}
 
-impl TokenProvider for OAuthTokenManager {
-    fn access_token(&self) -> Result<String> {
-        if let Some(cached) = self.cached.lock().expect("token mutex").as_ref()
-            && cached.expires_at > Instant::now() + EXPIRY_SKEW
-        {
-            return Ok(cached.access_token.clone());
-        }
-        self.refresh()
+    /// Cached access token, when it is valid beyond the expiry skew.
+    fn cached_access_token(&self) -> Option<String> {
+        let cached = self.cached.lock().expect("token mutex");
+        cached
+            .as_ref()
+            .filter(|cached| cached.expires_at > Instant::now() + EXPIRY_SKEW)
+            .map(|cached| cached.access_token.clone())
     }
 
-    fn refresh(&self) -> Result<String> {
+    /// Issue the refresh request. The caller holds [`Self::refresh_lock`].
+    fn refresh_locked(&self) -> Result<String> {
         let refresh_token = self
             .refresh_token
             .lock()
@@ -353,10 +432,30 @@ impl TokenProvider for OAuthTokenManager {
     }
 }
 
+impl TokenProvider for OAuthTokenManager {
+    fn access_token(&self) -> Result<String> {
+        if let Some(token) = self.cached_access_token() {
+            return Ok(token);
+        }
+        let _guard = self.refresh_lock.lock().expect("token mutex");
+        // Another caller may have refreshed while this one waited.
+        if let Some(token) = self.cached_access_token() {
+            return Ok(token);
+        }
+        self.refresh_locked()
+    }
+
+    fn refresh(&self) -> Result<String> {
+        let _guard = self.refresh_lock.lock().expect("token mutex");
+        self.refresh_locked()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::http::HttpResponse;
+    use crate::provider_runtime::{MAX_ERROR_CHARS, REDACTED};
     use std::sync::{Arc, Mutex};
 
     #[test]
@@ -456,6 +555,45 @@ mod tests {
     }
 
     #[test]
+    fn token_error_description_is_redacted_then_truncated() {
+        // The vendor echoes the offending credential inside `error_description`;
+        // that is exactly the leak `describe_token_error` must close. The
+        // credential sits inside the retained prefix, so redaction and the
+        // truncation bound are both observable in the same message.
+        let secret = "SEKRET-REFRESH-VALUE";
+        let description = format!("refresh_token={secret} expired {}", "detail ".repeat(80));
+        let body = serde_json::json!({
+            "error": "invalid_grant",
+            "error_description": description,
+        });
+        let transport = TokenTransport {
+            response: Mutex::new(Some(HttpResponse {
+                status: 400,
+                headers: vec![],
+                body: serde_json::to_vec(&body).unwrap(),
+            })),
+            request: Mutex::new(None),
+        };
+        let error = refresh_tokens(&transport, &OAuthConfig::google("id"), "rt").unwrap_err();
+        let message = format!("{error}");
+
+        assert!(!message.contains(secret), "credential leaked: {message}");
+        assert!(!message.contains("refresh_token="), "key leaked: {message}");
+        assert!(message.contains(REDACTED), "not redacted: {message}");
+        // Truncation bounds what a hostile vendor can push into the UI.
+        assert!(
+            message.chars().count() < description.chars().count(),
+            "description was not truncated ({} chars): {message}",
+            message.chars().count()
+        );
+        assert!(
+            message.chars().count() <= MAX_ERROR_CHARS + "authentication error: ".len() + 8,
+            "unbounded message ({} chars): {message}",
+            message.chars().count()
+        );
+    }
+
+    #[test]
     fn token_manager_refreshes_and_caches() {
         let transport = Arc::new(TokenTransport {
             response: Mutex::new(Some(HttpResponse {
@@ -473,5 +611,175 @@ mod tests {
         assert_eq!(manager.access_token().unwrap(), "fresh");
         assert_eq!(manager.access_token().unwrap(), "fresh");
         assert!(transport.response.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn google_authorization_url_pairs_are_unchanged() {
+        // Byte-identical consent URL for Drive: same pairs, same order.
+        let config = OAuthConfig::google("client-id");
+        let pkce = PkcePair::from_verifier("verifier-verifier-verifier-verifier-verifier");
+        let url =
+            authorization_url(&config, "http://127.0.0.1:45812/callback", &pkce, "state").unwrap();
+        let parsed = Url::parse(&url).unwrap();
+        let pairs: Vec<(String, String)> = parsed
+            .query_pairs()
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect();
+
+        assert_eq!(
+            pairs,
+            vec![
+                ("client_id".to_string(), "client-id".to_string()),
+                (
+                    "redirect_uri".to_string(),
+                    "http://127.0.0.1:45812/callback".to_string()
+                ),
+                ("response_type".to_string(), "code".to_string()),
+                ("scope".to_string(), DRIVE_FILE_SCOPE.to_string()),
+                ("code_challenge".to_string(), pkce.challenge.clone()),
+                ("code_challenge_method".to_string(), "S256".to_string()),
+                ("state".to_string(), "state".to_string()),
+                ("access_type".to_string(), "offline".to_string()),
+                ("prompt".to_string(), "consent".to_string()),
+                ("include_granted_scopes".to_string(), "true".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn dropbox_authorization_url_requests_offline_access() {
+        let config = OAuthConfig::dropbox("app-key");
+        let pkce = PkcePair::from_verifier("verifier-verifier-verifier-verifier-verifier");
+        let url =
+            authorization_url(&config, "http://127.0.0.1:45812/callback", &pkce, "state").unwrap();
+        let parsed = Url::parse(&url).unwrap();
+        let params: std::collections::HashMap<_, _> = parsed.query_pairs().into_owned().collect();
+
+        assert_eq!(parsed.host_str(), Some("www.dropbox.com"));
+        assert_eq!(parsed.path(), "/oauth2/authorize");
+        assert_eq!(params.get("client_id").unwrap(), "app-key");
+        assert_eq!(params.get("token_access_type").unwrap(), "offline");
+        assert_eq!(params.get("code_challenge_method").unwrap(), "S256");
+        assert_eq!(params.get("code_challenge").unwrap(), &pkce.challenge);
+        assert_eq!(params.get("state").unwrap(), "state");
+        assert_eq!(
+            params.get("scope").unwrap(),
+            "files.content.write files.content.read files.metadata.read"
+        );
+        // Google-only parameters must not leak into Dropbox's consent URL.
+        assert!(!params.contains_key("access_type"));
+        assert!(!params.contains_key("prompt"));
+        assert!(!params.contains_key("include_granted_scopes"));
+    }
+
+    #[test]
+    fn dropbox_code_exchange_and_refresh_omit_client_secret() {
+        let transport = TokenTransport {
+            response: Mutex::new(Some(HttpResponse {
+                status: 200,
+                headers: vec![],
+                body: br#"{"access_token":"at","refresh_token":"rt","expires_in":14400,"token_type":"bearer","scope":"files.content.write files.content.read files.metadata.read"}"#.to_vec(),
+            })),
+            request: Mutex::new(None),
+        };
+        let config = OAuthConfig::dropbox("app-key");
+        let pkce = PkcePair::from_verifier("verifier-verifier-verifier-verifier-verifier");
+        let tokens = exchange_code(
+            &transport,
+            &config,
+            "code-123",
+            &pkce,
+            "http://127.0.0.1:45812/callback",
+        )
+        .unwrap();
+
+        assert_eq!(tokens.access_token, "at");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("rt"));
+        assert_eq!(tokens.expires_in, Some(14400));
+        assert!(tokens.expires_at.is_some());
+
+        let request = transport.request.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            request.url, "https://www.dropbox.com/oauth2/token",
+            "the token exchange must target Dropbox's token endpoint"
+        );
+        let form = String::from_utf8(request.body.unwrap().read_all().unwrap()).unwrap();
+        assert!(form.contains("grant_type=authorization_code"));
+        assert!(form.contains("client_id=app-key"));
+        assert!(
+            form.contains("code_verifier=verifier-verifier-verifier-verifier-verifier"),
+            "PKCE verifier must be sent: {form}"
+        );
+        assert!(
+            !form.contains("client_secret"),
+            "PKCE clients have no secret: {form}"
+        );
+
+        // The refresh grant uses the same verifier-free form and no secret.
+        let transport = TokenTransport {
+            response: Mutex::new(Some(HttpResponse {
+                status: 200,
+                headers: vec![],
+                body: br#"{"access_token":"at2","expires_in":14400}"#.to_vec(),
+            })),
+            request: Mutex::new(None),
+        };
+        let tokens = refresh_tokens(&transport, &config, "rt").unwrap();
+        assert_eq!(tokens.access_token, "at2");
+        let request = transport.request.lock().unwrap().clone().unwrap();
+        let form = String::from_utf8(request.body.unwrap().read_all().unwrap()).unwrap();
+        assert!(form.contains("grant_type=refresh_token"));
+        assert!(form.contains("refresh_token=rt"));
+        assert!(!form.contains("client_secret"));
+        assert!(!form.contains("code_verifier"));
+    }
+
+    struct CountingTransport {
+        requests: Mutex<usize>,
+    }
+
+    impl HttpTransport for CountingTransport {
+        fn execute(&self, _request: &HttpRequest) -> Result<HttpResponse> {
+            *self.requests.lock().unwrap() += 1;
+            // Hold the gate long enough for the other callers to queue up.
+            std::thread::sleep(Duration::from_millis(30));
+            Ok(HttpResponse {
+                status: 200,
+                headers: vec![],
+                body: br#"{"access_token":"shared","expires_in":3600}"#.to_vec(),
+            })
+        }
+    }
+
+    #[test]
+    fn concurrent_token_requests_refresh_once() {
+        let transport = Arc::new(CountingTransport {
+            requests: Mutex::new(0),
+        });
+        let manager: Arc<OAuthTokenManager> = Arc::new(OAuthTokenManager::new(
+            OAuthConfig::dropbox("app-key"),
+            transport.clone(),
+            "refresh-token",
+        ));
+
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let manager = manager.clone();
+                std::thread::spawn(move || manager.access_token())
+            })
+            .collect();
+        for handle in handles {
+            assert_eq!(handle.join().unwrap().unwrap(), "shared");
+        }
+
+        assert_eq!(
+            *transport.requests.lock().unwrap(),
+            1,
+            "concurrent refreshes must collapse into a single token request"
+        );
+
+        // A forced refresh (after a 401) is still a real network request.
+        assert_eq!(manager.refresh().unwrap(), "shared");
+        assert_eq!(*transport.requests.lock().unwrap(), 2);
     }
 }

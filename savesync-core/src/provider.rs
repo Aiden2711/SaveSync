@@ -258,7 +258,11 @@ fn write_atomic(destination: &Path, bytes: &[u8]) -> Result<()> {
     result
 }
 
-fn validate_hash(value: &str) -> Result<()> {
+/// Remote object digests are 64 lowercase-or-uppercase hex characters.
+///
+/// Shared with every provider so a remote path is validated before any request
+/// is issued.
+pub(crate) fn validate_hash(value: &str) -> Result<()> {
     if value.len() != 64 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Error::InvalidState(format!("invalid digest: {value:?}")));
     }
@@ -266,7 +270,7 @@ fn validate_hash(value: &str) -> Result<()> {
 }
 
 /// Provider object names must be single, traversal-free path segments.
-fn validate_segment(value: &str) -> Result<()> {
+pub(crate) fn validate_segment(value: &str) -> Result<()> {
     if value.is_empty()
         || value.len() > 128
         || value == "."

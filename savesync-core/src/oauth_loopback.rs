@@ -1,9 +1,12 @@
 //! Loopback OAuth redirect listener.
 //!
-//! Google's desktop OAuth flow redirects the browser to a short-lived HTTP
-//! server bound to `127.0.0.1`. The listener validates the `state` parameter
-//! (CSRF protection), exchanges the authorization code with the PKCE verifier,
-//! and returns the tokens to the caller. It never logs the code or tokens.
+//! Both vendors' desktop flows redirect the browser to a short-lived HTTP
+//! server bound to `127.0.0.1` (Google for Drive, Dropbox for its app folder).
+//! The listener validates the `state` parameter (CSRF protection), exchanges
+//! the authorization code with the PKCE verifier, and returns the tokens to the
+//! caller. User-facing copy comes from [`OAuthConfig::service_name`] and
+//! [`OAuthConfig::connected_message`], so adding a vendor never means editing
+//! this file. It never logs the code or tokens.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -81,7 +84,7 @@ impl OAuthFlow {
                 &mut stream,
                 200,
                 "SaveSync connected",
-                "Google Drive is connected. You can close this window and return to SaveSync.",
+                &self.config.connected_message,
             ),
             Err(_) => respond(
                 &mut stream,
@@ -100,9 +103,10 @@ impl OAuthFlow {
 
         loop {
             if Instant::now() >= deadline {
-                return Err(Error::Auth(
-                    "timed out waiting for Google sign-in (5 minutes)".into(),
-                ));
+                return Err(Error::Auth(format!(
+                    "timed out waiting for {} sign-in (5 minutes)",
+                    self.config.service_name
+                )));
             }
 
             match self.listener.accept() {
@@ -160,26 +164,33 @@ impl OAuthFlow {
 
         let state = state.unwrap_or_default();
         if !constant_time_eq(&state, &self.state) {
+            // A mismatch is only a rejected callback, not a reason to abandon
+            // the flow: browsers, extensions, and link prefetchers can hit the
+            // loopback port before the real redirect arrives. Answer 400 and
+            // keep listening until the genuine callback or the deadline.
             respond(
                 &mut stream,
                 400,
                 "Invalid sign-in request",
                 "The OAuth state did not match. Return to SaveSync and start again.",
             );
-            return Err(Error::Auth(
-                "OAuth state mismatch; the callback was rejected".into(),
-            ));
+            return Ok(None);
         }
 
         if let Some(error) = oauth_error {
             let detail = error_description.unwrap_or(error);
+            // `service_name` is "Google" for Drive, so that copy stays
+            // byte-identical while Dropbox reports its own name.
             respond(
                 &mut stream,
                 400,
                 "Sign-in cancelled",
-                &format!("Google reported: {detail}"),
+                &format!("{} reported: {detail}", self.config.service_name),
             );
-            return Err(Error::Auth(format!("Google sign-in failed: {detail}")));
+            return Err(Error::Auth(format!(
+                "{} sign-in failed: {detail}",
+                self.config.service_name
+            )));
         }
 
         match code {
@@ -257,7 +268,10 @@ fn respond(stream: &mut TcpStream, status: u16, title: &str, message: &str) {
     );
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.flush();
-    let _ = stream.shutdown(std::net::Shutdown::Both);
+    // Half-close only: the client reads until EOF. Shutting down the receive
+    // side as well can make Windows emit an RST while the peer is still
+    // reading, which surfaced as an intermittent `read_to_string` failure.
+    let _ = stream.shutdown(std::net::Shutdown::Write);
 }
 
 fn html_escape(value: &str) -> String {
@@ -356,18 +370,29 @@ mod tests {
     }
 
     #[test]
-    fn rejects_state_mismatch() {
+    fn ignores_a_bad_state_callback_and_completes_on_the_good_one() {
         let flow = OAuthFlow::start(OAuthConfig::google("client-id")).unwrap();
         let redirect = flow.redirect_uri().to_string();
+        let url = flow.authorization_url().unwrap();
+        let state = state_from(&url);
         let transport = Arc::new(TokenTransport {
             response: Mutex::new(Some(token_response())),
         });
         let handle =
-            std::thread::spawn(move || flow.finish(transport.as_ref(), Duration::from_secs(5)));
+            std::thread::spawn(move || flow.finish(transport.as_ref(), Duration::from_secs(10)));
 
-        let response = send(&redirect, "code=abc&state=wrong");
-        assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
-        assert!(matches!(handle.join().unwrap(), Err(Error::Auth(_))));
+        // Wrong state: the callback is refused, but the listener stays up.
+        let rejected = send(&redirect, "code=abc&state=wrong");
+        assert!(rejected.starts_with("HTTP/1.1 400 Bad Request"));
+
+        // The genuine redirect still completes the flow.
+        let accepted = send(&redirect, &format!("code=abc123&state={state}"));
+        assert!(accepted.starts_with("HTTP/1.1 200 OK"));
+        assert!(accepted.contains("Google Drive is connected"));
+
+        let tokens = handle.join().unwrap().unwrap();
+        assert_eq!(tokens.access_token, "access");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("refresh"));
     }
 
     #[test]
@@ -391,6 +416,76 @@ mod tests {
             handle.join().unwrap(),
             Err(Error::Auth(message)) if message.contains("cancelled")
         ));
+    }
+
+    #[test]
+    fn dropbox_flow_uses_service_specific_copy_and_offline_access() {
+        // Consent URL: app-folder Dropbox flow must ask for offline access.
+        let flow = OAuthFlow::start(OAuthConfig::dropbox("app-key")).unwrap();
+        let redirect = flow.redirect_uri().to_string();
+        let url = flow.authorization_url().unwrap();
+        let parsed = Url::parse(&url).unwrap();
+        assert_eq!(parsed.host_str(), Some("www.dropbox.com"));
+        let params: std::collections::HashMap<_, _> = parsed.query_pairs().into_owned().collect();
+        assert_eq!(params.get("token_access_type").unwrap(), "offline");
+        assert!(!params.contains_key("access_type"));
+
+        let state = state_from(&url);
+        let transport = Arc::new(TokenTransport {
+            response: Mutex::new(Some(token_response())),
+        });
+        let handle =
+            std::thread::spawn(move || flow.finish(transport.as_ref(), Duration::from_secs(5)));
+
+        let response = send(&redirect, &format!("code=abc123&state={state}"));
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("Dropbox is connected"));
+        let tokens = handle.join().unwrap().unwrap();
+        assert_eq!(tokens.access_token, "access");
+
+        // A rejected state is not vendor-specific copy: the callback is
+        // refused and the flow keeps waiting for the genuine redirect.
+        let flow = OAuthFlow::start(OAuthConfig::dropbox("app-key")).unwrap();
+        let redirect = flow.redirect_uri().to_string();
+        let url = flow.authorization_url().unwrap();
+        let state = state_from(&url);
+        let transport = Arc::new(TokenTransport {
+            response: Mutex::new(Some(token_response())),
+        });
+        let handle =
+            std::thread::spawn(move || flow.finish(transport.as_ref(), Duration::from_secs(10)));
+        let rejected = send(&redirect, "code=abc&state=wrong");
+        assert!(rejected.starts_with("HTTP/1.1 400 Bad Request"));
+        // The rejection page must not name a vendor.
+        assert!(!rejected.contains("Dropbox"));
+        let response = send(&redirect, &format!("code=abc123&state={state}"));
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("Dropbox is connected"));
+        assert_eq!(handle.join().unwrap().unwrap().access_token, "access");
+    }
+
+    #[test]
+    fn dropbox_cancellation_names_dropbox() {
+        let flow = OAuthFlow::start(OAuthConfig::dropbox("app-key")).unwrap();
+        let redirect = flow.redirect_uri().to_string();
+        let url = flow.authorization_url().unwrap();
+        let state = state_from(&url);
+        let transport = Arc::new(TokenTransport {
+            response: Mutex::new(Some(token_response())),
+        });
+        let handle =
+            std::thread::spawn(move || flow.finish(transport.as_ref(), Duration::from_secs(5)));
+
+        let response = send(
+            &redirect,
+            &format!("error=access_denied&error_description=User+cancelled&state={state}"),
+        );
+        assert!(response.contains("Dropbox reported"));
+        let error = handle.join().unwrap().unwrap_err();
+        assert!(
+            matches!(&error, Error::Auth(message) if message.contains("Dropbox sign-in failed")),
+            "unexpected error: {error:?}"
+        );
     }
 
     #[test]

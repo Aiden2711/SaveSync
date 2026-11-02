@@ -22,6 +22,7 @@ pub mod blob;
 pub mod credentials;
 pub mod db;
 pub mod discovery;
+pub mod dropbox;
 pub mod engine;
 pub mod error;
 pub mod google_drive;
@@ -33,14 +34,20 @@ pub mod oauth;
 pub mod oauth_loopback;
 pub mod paths;
 pub mod provider;
+pub mod provider_runtime;
 pub mod restore;
 pub mod store;
 pub mod sync;
 pub mod watcher;
+pub mod webdav;
 
 pub use artwork::{GridCandidate, MAX_GRID_BYTES, SteamGridDbClient};
-pub use credentials::{KeyringTokenStore, MemoryTokenStore, TokenStore};
+pub use credentials::{
+    DROPBOX_ACCOUNT, GOOGLE_ACCOUNT, KeyringTokenStore, MemoryTokenStore, SERVICE, TokenStore,
+    WEBDAV_ACCOUNT,
+};
 pub use discovery::{DiscoveredGame, DiscoverySource};
+pub use dropbox::DropboxProvider;
 pub use engine::{CoverSearch, GRID_UNAVAILABLE_MESSAGE, SaveSyncEngine};
 pub use error::{Error, Result};
 pub use google_drive::GoogleDriveProvider;
@@ -56,6 +63,8 @@ pub use oauth::{
 };
 pub use oauth_loopback::OAuthFlow;
 pub use provider::{LocalFolderProvider, SyncProvider};
+pub use provider_runtime::{ProviderFlavor, StatusClass};
 pub use restore::{DataPaths, RestoreMode, RestoreRequest};
 pub use sync::{SyncDirection, SyncReport};
 pub use watcher::{ChangeTracker, DebouncePolicy, DirtyEvent, DirtyReason, SaveWatcher};
+pub use webdav::WebDavProvider;
