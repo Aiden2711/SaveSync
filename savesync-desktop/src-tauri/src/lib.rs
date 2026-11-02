@@ -393,8 +393,14 @@ fn set_google_client_id(
 
     let previous = state.inner.client_id.lock().map_err(lock_error)?.clone();
     if previous.as_deref() != Some(client_id.as_str()) {
-        // A token issued to a different client id is unusable.
-        let _ = state.inner.credentials.delete();
+        // A token issued to a different client id is unusable, and startup
+        // infers "connected" from the token's presence. Abort before the new id
+        // is saved if the stale token cannot be removed, otherwise the next
+        // launch would report a connection that cannot work.
+        state.inner.credentials.delete().map_err(|_| {
+            "Could not update the Google credentials. Disconnect Google Drive and try again."
+                .to_string()
+        })?;
         let mut oauth = state.inner.oauth.lock().map_err(lock_error)?;
         oauth.connected = false;
     }
@@ -501,10 +507,35 @@ fn begin_google_oauth(state: tauri::State<'_, AppState>) -> Result<OAuthStart, S
     })
 }
 
+/// Origins the shell is willing to hand to the OS browser.
+///
+/// This is an exact prefix allow-list, not a navigable URL validator: the only
+/// URLs the UI ever receives are the `auth_url` values the OAuth start commands
+/// built themselves. Google's entry is the historical prefix, unchanged;
+/// Dropbox's requires the query string so a crafted path on the same host cannot
+/// ride along.
+const AUTH_URL_ALLOWED_PREFIXES: [&str; 2] = [
+    "https://accounts.google.com/",
+    "https://www.dropbox.com/oauth2/authorize?",
+];
+
+/// Whether `url` is one of the consent pages this shell will open.
+///
+/// Whitespace and control characters are rejected outright so the value the
+/// browser receives is exactly the value that was checked.
+fn is_allowed_auth_url(url: &str) -> bool {
+    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return false;
+    }
+    AUTH_URL_ALLOWED_PREFIXES
+        .iter()
+        .any(|prefix| url.starts_with(prefix))
+}
+
 #[tauri::command(rename_all = "snake_case")]
 fn open_auth_url(url: String) -> Result<(), String> {
-    if !url.starts_with("https://accounts.google.com/") {
-        return Err("refusing to open a non-Google authorization URL".into());
+    if !is_allowed_auth_url(&url) {
+        return Err("refusing to open an unrecognised authorization URL".into());
     }
     open::that(url).map_err(|error| format!("could not open the system browser: {error}"))
 }
@@ -624,6 +655,54 @@ impl Inner {
     }
 }
 
+/// Narrow seam over the persisted settings table.
+///
+/// [`SaveSyncEngine`] is the only production implementation. The commands that
+/// touch more than one credential are written against this trait so their
+/// ordering and rollback behaviour can be tested without opening a database or
+/// an OS keyring.
+trait SettingsStore {
+    fn get_setting(&self, key: &str) -> savesync_core::Result<Option<String>>;
+    fn set_setting(&mut self, key: &str, value: &str) -> savesync_core::Result<()>;
+}
+
+impl SettingsStore for SaveSyncEngine {
+    fn get_setting(&self, key: &str) -> savesync_core::Result<Option<String>> {
+        SaveSyncEngine::setting(self, key)
+    }
+
+    fn set_setting(&mut self, key: &str, value: &str) -> savesync_core::Result<()> {
+        SaveSyncEngine::set_setting(self, key, value)
+    }
+}
+
+/// Rotate the persisted Dropbox app key.
+///
+/// The stored refresh token is deleted first because a token issued to a
+/// different app key is unusable, and [`Inner::dropbox_status`] infers
+/// "connected" from the token's presence. If that deletion fails the new key is
+/// deliberately NOT persisted: storing it would pair a stale token with a
+/// different app key and report a connection that cannot work. A failure after
+/// the deletion is safe to report as-is — the token is already gone, so the
+/// provider reads as disconnected.
+fn persist_dropbox_app_key(
+    settings: &mut dyn SettingsStore,
+    credentials: &dyn TokenStore,
+    previous: Option<&str>,
+    app_key: &str,
+) -> Result<(), String> {
+    if previous == Some(app_key) {
+        return Ok(());
+    }
+    credentials.delete().map_err(|_| {
+        "Could not update the Dropbox credentials. Disconnect from Dropbox and try again."
+            .to_string()
+    })?;
+    settings
+        .set_setting(DROPBOX_APP_KEY_SETTING, app_key)
+        .map_err(stringify)
+}
+
 #[tauri::command(rename_all = "snake_case")]
 fn set_dropbox_app_key(
     state: tauri::State<'_, AppState>,
@@ -651,22 +730,25 @@ fn set_dropbox_app_key(
         .lock()
         .map_err(lock_error)?
         .clone();
+    {
+        let mut engine = state.inner.engine.lock().map_err(lock_error)?;
+        persist_dropbox_app_key(
+            &mut *engine,
+            &*state.inner.dropbox_credentials,
+            previous.as_deref(),
+            &app_key,
+        )?;
+    }
+
+    // Only now, with the key and the token store consistent, does the shell
+    // claim the new key.
     if previous.as_deref() != Some(app_key.as_str()) {
-        // A refresh token issued to a different app key is unusable.
-        let _ = state.inner.dropbox_credentials.delete();
         state
             .inner
             .dropbox_oauth
             .lock()
             .map_err(lock_error)?
             .connected = false;
-    }
-
-    {
-        let mut engine = state.inner.engine.lock().map_err(lock_error)?;
-        engine
-            .set_setting(DROPBOX_APP_KEY_SETTING, &app_key)
-            .map_err(stringify)?;
     }
     *state.inner.dropbox_app_key.lock().map_err(lock_error)? = Some(app_key);
 
@@ -772,6 +854,82 @@ fn disconnect_dropbox(state: tauri::State<'_, AppState>) -> Result<ProviderStatu
     Ok(status)
 }
 
+/// One settings key, the value it currently holds, and the value to write.
+type SettingChange<'a> = (&'a str, Option<String>, &'a str);
+
+/// Restore the prior value of every settings key a failed write may have
+/// replaced. Best effort: the caller is already returning the original failure,
+/// and a rollback write cannot improve on it without exposing store internals.
+fn restore_settings(settings: &mut dyn SettingsStore, changes: &[SettingChange<'_>]) {
+    for (key, prior, _) in changes {
+        if let Some(prior) = prior {
+            let _ = settings.set_setting(key, prior);
+        }
+    }
+}
+
+/// Persist the WebDAV endpoint and username, then the password.
+///
+/// Ordering is deliberate: non-secret settings first, the keyring secret last.
+/// A failure at any step restores what it replaced, so a returned error never
+/// leaves a new secret paired with an old endpoint (or the reverse). The caller
+/// updates its in-memory copy only after this succeeds.
+///
+/// A key with no prior value cannot be removed again (the settings table has no
+/// delete path), so a first-ever configuration that fails after the settings
+/// write keeps them. That state has no secret paired with it, so it reads as
+/// configured-but-not-connected rather than as a working connection, and sync
+/// stays disabled.
+fn persist_webdav_config(
+    settings: &mut dyn SettingsStore,
+    credentials: &dyn TokenStore,
+    endpoint: &str,
+    username: &str,
+    effective_password: &str,
+    stored_password: Option<&str>,
+) -> Result<(), String> {
+    let changes: [SettingChange<'_>; 2] = [
+        (
+            WEBDAV_ENDPOINT_SETTING,
+            settings
+                .get_setting(WEBDAV_ENDPOINT_SETTING)
+                .map_err(stringify)?,
+            endpoint,
+        ),
+        (
+            WEBDAV_USERNAME_SETTING,
+            settings
+                .get_setting(WEBDAV_USERNAME_SETTING)
+                .map_err(stringify)?,
+            username,
+        ),
+    ];
+
+    for (key, prior, next) in &changes {
+        if prior.as_deref() == Some(*next) {
+            continue;
+        }
+        if let Err(error) = settings.set_setting(key, next) {
+            restore_settings(settings, &changes);
+            return Err(stringify(error));
+        }
+    }
+
+    if stored_password != Some(effective_password) && credentials.save(effective_password).is_err()
+    {
+        restore_settings(settings, &changes);
+        // A failed save is not proof the previous secret survived, so put it
+        // back explicitly. Either way the resulting state is defined.
+        let _ = match stored_password {
+            Some(prior) => credentials.save(prior),
+            None => credentials.delete(),
+        };
+        return Err("Could not save the WebDAV password to the OS keyring.".to_string());
+    }
+
+    Ok(())
+}
+
 /// Persist the non-secret WebDAV configuration and, when supplied, the password
 /// in the OS keyring.
 ///
@@ -824,21 +982,16 @@ fn set_webdav_config(
     // concern the endpoint or username and never echo the password.
     WebDavProvider::production(&endpoint, &username, &effective_password).map_err(stringify)?;
 
-    if stored_password.as_deref() != Some(effective_password.as_str()) {
-        state
-            .inner
-            .webdav_credentials
-            .save(&effective_password)
-            .map_err(|_| "Could not save the WebDAV password to the OS keyring.".to_string())?;
-    }
     {
         let mut engine = state.inner.engine.lock().map_err(lock_error)?;
-        engine
-            .set_setting(WEBDAV_ENDPOINT_SETTING, &endpoint)
-            .map_err(stringify)?;
-        engine
-            .set_setting(WEBDAV_USERNAME_SETTING, &username)
-            .map_err(stringify)?;
+        persist_webdav_config(
+            &mut *engine,
+            &*state.inner.webdav_credentials,
+            &endpoint,
+            &username,
+            &effective_password,
+            stored_password.as_deref(),
+        )?;
     }
     *state.inner.webdav_endpoint.lock().map_err(lock_error)? = Some(endpoint);
     *state.inner.webdav_username.lock().map_err(lock_error)? = Some(username);
@@ -1812,5 +1965,253 @@ mod tests {
         let mut empty = String::new();
         scrub_secret(&mut empty);
         assert!(empty.is_empty());
+    }
+
+    /// The manual "Open the consent page" fallback is a command, so its input
+    /// is untrusted. Only the two consent origins the OAuth start commands build
+    /// themselves may be opened.
+    #[test]
+    fn open_auth_url_only_accepts_known_consent_origins() {
+        assert!(is_allowed_auth_url(
+            "https://accounts.google.com/o/oauth2/v2/auth?client_id=x"
+        ));
+        assert!(is_allowed_auth_url(
+            "https://www.dropbox.com/oauth2/authorize?client_id=app-key&response_type=code"
+        ));
+
+        // The bare Dropbox path is not an authorization request.
+        assert!(!is_allowed_auth_url(
+            "https://www.dropbox.com/oauth2/authorize"
+        ));
+        assert!(!is_allowed_auth_url("https://www.dropbox.com/oauth2/"));
+        assert!(!is_allowed_auth_url(
+            "https://accounts.google.com.evil.test/"
+        ));
+        assert!(!is_allowed_auth_url("https://evil.test/oauth2/authorize?x"));
+        assert!(!is_allowed_auth_url("http://accounts.google.com/"));
+        assert!(!is_allowed_auth_url("file:///etc/passwd"));
+        assert!(!is_allowed_auth_url(""));
+        // Whitespace and control characters are rejected: what the browser
+        // receives must be exactly what was checked.
+        assert!(!is_allowed_auth_url(
+            "https://accounts.google.com/ oauth2/v2/auth"
+        ));
+        assert!(!is_allowed_auth_url(
+            "https://accounts.google.com/o/oauth2/v2/auth\n"
+        ));
+    }
+
+    /// In-memory [`SettingsStore`] with an injectable write failure, so a
+    /// multi-key persist can be exercised without a database.
+    struct FakeSettings {
+        values: std::collections::HashMap<String, String>,
+        /// When set, a write to this key fails with a secret-shaped payload.
+        failing_key: Option<&'static str>,
+        /// Every successful write, in order.
+        writes: Vec<(String, String)>,
+    }
+
+    impl FakeSettings {
+        fn with(values: &[(&str, &str)]) -> Self {
+            Self {
+                values: values
+                    .iter()
+                    .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+                    .collect(),
+                failing_key: None,
+                writes: Vec::new(),
+            }
+        }
+
+        fn value(&self, key: &str) -> Option<&str> {
+            self.values.get(key).map(String::as_str)
+        }
+    }
+
+    impl SettingsStore for FakeSettings {
+        fn get_setting(&self, key: &str) -> savesync_core::Result<Option<String>> {
+            Ok(self.values.get(key).cloned())
+        }
+
+        fn set_setting(&mut self, key: &str, value: &str) -> savesync_core::Result<()> {
+            if self.failing_key == Some(key) {
+                // A settings write failure is metadata, not a credential: the
+                // command layer forwards it as-is (unchanged behaviour).
+                return Err(savesync_core::Error::InvalidState(
+                    "settings write failed".into(),
+                ));
+            }
+            self.writes.push((key.to_string(), value.to_string()));
+            self.values.insert(key.to_string(), value.to_string());
+            Ok(())
+        }
+    }
+
+    const DAV_SENTINEL_PASSWORD: &str = "dav-sentinel-password";
+
+    #[test]
+    fn webdav_settings_failure_rolls_back_both_keys_and_leaves_the_keyring_alone() {
+        let mut settings = FakeSettings::with(&[
+            (WEBDAV_ENDPOINT_SETTING, "https://old.example.com/savesync"),
+            (WEBDAV_USERNAME_SETTING, "old-user"),
+        ]);
+        // The second settings key fails, so the first one is already written.
+        settings.failing_key = Some(WEBDAV_USERNAME_SETTING);
+        let credentials: Arc<dyn TokenStore> = Arc::new(MemoryTokenStore::default());
+        credentials.save("old-password").unwrap();
+
+        let error = persist_webdav_config(
+            &mut settings,
+            &*credentials,
+            "https://new.example.com/savesync",
+            "new-user",
+            DAV_SENTINEL_PASSWORD,
+            Some("old-password"),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("settings write failed"));
+        assert_eq!(
+            settings.value(WEBDAV_ENDPOINT_SETTING),
+            Some("https://old.example.com/savesync")
+        );
+        assert_eq!(settings.value(WEBDAV_USERNAME_SETTING), Some("old-user"));
+        // The settings step failed before the secret was touched, so the old
+        // password still matches the old endpoint.
+        assert_eq!(credentials.load().unwrap().as_deref(), Some("old-password"));
+    }
+
+    #[test]
+    fn webdav_keyring_failure_rolls_back_the_settings() {
+        let mut settings = FakeSettings::with(&[
+            (WEBDAV_ENDPOINT_SETTING, "https://old.example.com/savesync"),
+            (WEBDAV_USERNAME_SETTING, "old-user"),
+        ]);
+        let credentials = FailingStore;
+
+        let error = persist_webdav_config(
+            &mut settings,
+            &credentials,
+            "https://new.example.com/savesync",
+            "new-user",
+            DAV_SENTINEL_PASSWORD,
+            Some("old-password"),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            "Could not save the WebDAV password to the OS keyring."
+        );
+        assert!(!error.contains(DAV_SENTINEL_PASSWORD));
+        // No new secret, so the new endpoint must not survive either.
+        assert_eq!(
+            settings.value(WEBDAV_ENDPOINT_SETTING),
+            Some("https://old.example.com/savesync")
+        );
+        assert_eq!(settings.value(WEBDAV_USERNAME_SETTING), Some("old-user"));
+    }
+
+    #[test]
+    fn webdav_persist_writes_only_changed_keys_and_the_secret_last() {
+        let mut settings = FakeSettings::with(&[
+            (WEBDAV_ENDPOINT_SETTING, "https://old.example.com/savesync"),
+            (WEBDAV_USERNAME_SETTING, "old-user"),
+        ]);
+        let credentials: Arc<dyn TokenStore> = Arc::new(MemoryTokenStore::default());
+        credentials.save("old-password").unwrap();
+
+        // Blank password semantics: the stored secret is reused, so only the
+        // username reaches the database and the keyring is not rewritten.
+        persist_webdav_config(
+            &mut settings,
+            &*credentials,
+            "https://old.example.com/savesync",
+            "new-user",
+            "old-password",
+            Some("old-password"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            settings.writes,
+            vec![(WEBDAV_USERNAME_SETTING.to_string(), "new-user".to_string())]
+        );
+        assert_eq!(credentials.load().unwrap().as_deref(), Some("old-password"));
+
+        // A new password is persisted after the settings.
+        persist_webdav_config(
+            &mut settings,
+            &*credentials,
+            "https://new.example.com/savesync",
+            "new-user",
+            DAV_SENTINEL_PASSWORD,
+            Some("old-password"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            settings.value(WEBDAV_ENDPOINT_SETTING),
+            Some("https://new.example.com/savesync")
+        );
+        assert_eq!(
+            credentials.load().unwrap().as_deref(),
+            Some(DAV_SENTINEL_PASSWORD)
+        );
+    }
+
+    #[test]
+    fn dropbox_app_key_change_aborts_when_the_stale_token_cannot_be_deleted() {
+        let mut settings = FakeSettings::with(&[(DROPBOX_APP_KEY_SETTING, "old-key")]);
+        let credentials = FailingStore;
+
+        let error =
+            persist_dropbox_app_key(&mut settings, &credentials, Some("old-key"), "new-key")
+                .unwrap_err();
+
+        // Actionable, and it names no keyring internals.
+        assert!(error.contains("Disconnect"));
+        assert!(!error.contains("leaked"));
+        // The stale token may still be there, so the new key must not be
+        // persisted: that pairing reports a connection that cannot work.
+        assert_eq!(settings.value(DROPBOX_APP_KEY_SETTING), Some("old-key"));
+    }
+
+    #[test]
+    fn dropbox_app_key_change_deletes_the_token_before_persisting_the_key() {
+        let mut settings = FakeSettings::with(&[(DROPBOX_APP_KEY_SETTING, "old-key")]);
+        let credentials: Arc<dyn TokenStore> = Arc::new(MemoryTokenStore::default());
+        credentials.save("stale-refresh-token").unwrap();
+
+        persist_dropbox_app_key(&mut settings, &*credentials, Some("old-key"), "new-key").unwrap();
+
+        assert_eq!(settings.value(DROPBOX_APP_KEY_SETTING), Some("new-key"));
+        assert_eq!(credentials.load().unwrap(), None);
+
+        // Saving the key that is already stored must not delete a live token.
+        credentials.save("live-refresh-token").unwrap();
+        persist_dropbox_app_key(&mut settings, &*credentials, Some("new-key"), "new-key").unwrap();
+        assert_eq!(
+            credentials.load().unwrap().as_deref(),
+            Some("live-refresh-token")
+        );
+    }
+
+    #[test]
+    fn dropbox_app_key_persist_failure_is_reported_after_the_token_is_gone() {
+        let mut settings = FakeSettings::with(&[(DROPBOX_APP_KEY_SETTING, "old-key")]);
+        settings.failing_key = Some(DROPBOX_APP_KEY_SETTING);
+        let credentials: Arc<dyn TokenStore> = Arc::new(MemoryTokenStore::default());
+        credentials.save("stale-refresh-token").unwrap();
+
+        let error =
+            persist_dropbox_app_key(&mut settings, &*credentials, Some("old-key"), "new-key")
+                .unwrap_err();
+
+        assert!(error.contains("settings write failed"));
+        // The deletion happened, and it is safe to say so: the token is gone, so
+        // the provider now reads as disconnected.
+        assert_eq!(credentials.load().unwrap(), None);
+        assert_eq!(settings.value(DROPBOX_APP_KEY_SETTING), Some("old-key"));
     }
 }

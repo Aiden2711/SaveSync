@@ -436,6 +436,9 @@ const handlers: Record<string, Handler> = {
     auth_url: "https://www.dropbox.com/oauth2/authorize?client_id=test-app-key",
     redirect_uri: "http://127.0.0.1:53682/callback",
   }),
+  // The manual consent-page fallback. The command validates the URL in Rust, so
+  // the stub stays a no-op and the call itself is what tests assert on.
+  open_auth_url: () => undefined,
   disconnect_dropbox: () => {
     dropboxStatus = { ...dropboxStatus, connected: false, pending: false, error: null };
     return dropboxStatus;

@@ -337,6 +337,12 @@ export default function App() {
   const [snapshotMessage, setSnapshotMessage] = useState("");
   const [clientIdDraft, setClientIdDraft] = useState("");
   const [authUrl, setAuthUrl] = useState<string | null>(null);
+  /**
+   * The Dropbox consent URL from the last start response. Kept so the manual
+   * fallback is reachable even when the automatic browser launch failed
+   * silently in Rust.
+   */
+  const [dropboxAuthUrl, setDropboxAuthUrl] = useState<string | null>(null);
   /** Flag only: the SteamGridDB key lives in the OS keyring, never in the UI. */
   const [artworkConfigured, setArtworkConfigured] = useState(false);
   const [steamGridKeyDraft, setSteamGridKeyDraft] = useState("");
@@ -1062,6 +1068,7 @@ export default function App() {
       api.beginDropboxOAuth(),
     );
     if (started) {
+      setDropboxAuthUrl(started.auth_url);
       setNotice(
         "A browser window was opened. Finish Dropbox sign-in there; SaveSync will update automatically.",
       );
@@ -1843,6 +1850,21 @@ export default function App() {
                 onClick={() =>
                   void api
                     .openAuthUrl(authUrl)
+                    .catch((cause) => setError(String(cause)))
+                }
+              >
+                Open the consent page
+              </button>
+            </p>
+          )}
+          {provider === "dropbox" && dropboxAuthUrl && (
+            <p className="muted tiny break">
+              Browser did not open?{" "}
+              <button
+                className="ghost tiny"
+                onClick={() =>
+                  void api
+                    .openAuthUrl(dropboxAuthUrl)
                     .catch((cause) => setError(String(cause)))
                 }
               >

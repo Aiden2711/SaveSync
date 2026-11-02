@@ -167,6 +167,24 @@ describe("WebDAV settings", () => {
       alert.compareDocumentPosition(actionRow!) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
+
+  it("refuses to save without an endpoint and never calls the command", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const picker = await openCloud(user);
+    await user.click(within(picker).getByRole("button", { name: "WebDAV" }));
+
+    await user.click(
+      await screen.findByRole("button", { name: "Save and connect" }),
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Enter the WebDAV endpoint.",
+    );
+    // The gate is local, so no half-configured write reaches the engine.
+    expect(calls.some((call) => call.cmd === "set_webdav_config")).toBe(false);
+  });
 });
 
 describe("Dropbox settings", () => {
@@ -192,6 +210,33 @@ describe("Dropbox settings", () => {
     expect(
       calls.some((call) => call.cmd === "begin_dropbox_oauth"),
     ).toBe(true);
+  });
+
+  it("offers a manual consent page when the browser launch fails silently", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const picker = await openCloud(user);
+    await user.click(within(picker).getByRole("button", { name: "Dropbox" }));
+    await user.type(await screen.findByLabelText("App key"), "test-app-key");
+    await user.click(screen.getByRole("button", { name: "Save app key" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Connect Dropbox" }),
+    );
+
+    // Rust suppresses a failed `open::that`, so the only way to reach the
+    // consent page is the URL from the start response — mirroring Google Drive.
+    const open = await screen.findByRole("button", {
+      name: "Open the consent page",
+    });
+    expect(screen.getByText(/Browser did not open\?/)).toBeInTheDocument();
+
+    await user.click(open);
+
+    const call = calls.find((entry) => entry.cmd === "open_auth_url");
+    expect(call?.args).toEqual({
+      url: "https://www.dropbox.com/oauth2/authorize?client_id=test-app-key",
+    });
   });
 });
 
