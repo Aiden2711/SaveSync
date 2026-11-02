@@ -9,6 +9,8 @@ import type {
   Game,
   GoogleStatus,
   OAuthStart,
+  ProviderKind,
+  ProviderStatus,
   RestoreReport,
   Revision,
   SnapshotInfo,
@@ -55,6 +57,28 @@ export const api = {
   openAuthUrl: (url: string) => invoke<void>("open_auth_url", { url }),
 
   disconnectGoogle: () => invoke<GoogleStatus>("disconnect_google"),
+
+  setDropboxAppKey: (app_key: string) =>
+    invoke<ProviderStatus>("set_dropbox_app_key", { app_key }),
+
+  dropboxStatus: () => invoke<ProviderStatus>("dropbox_status"),
+
+  beginDropboxOAuth: () => invoke<OAuthStart>("begin_dropbox_oauth"),
+
+  disconnectDropbox: () => invoke<ProviderStatus>("disconnect_dropbox"),
+
+  /** Stores the endpoint and username, and the password in the OS keyring. */
+  setWebdavConfig: (endpoint: string, username: string, password: string) =>
+    invoke<ProviderStatus>("set_webdav_config", { endpoint, username, password }),
+
+  webdavStatus: () => invoke<ProviderStatus>("webdav_status"),
+
+  disconnectWebdav: () => invoke<ProviderStatus>("disconnect_webdav"),
+
+  setActiveProvider: (provider: ProviderKind) =>
+    invoke<ProviderStatus>("set_active_provider", { provider }),
+
+  activeProvider: () => invoke<ProviderKind>("active_provider"),
 
   setSteamgriddbApiKey: (api_key: string) =>
     invoke<ArtworkStatus>("set_steamgriddb_api_key", { api_key }),

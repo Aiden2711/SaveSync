@@ -12,18 +12,26 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use savesync_core::{
-    AdapterType, Conflict, CoverSearch, DiscoveredGame, GRID_UNAVAILABLE_MESSAGE, Game,
-    GoogleDriveProvider, HttpTransport, KeyringTokenStore, MemoryTokenStore, OAuthConfig,
-    OAuthFlow, ReqwestTransport, RestoreReport, Revision, SaveSyncEngine, SaveWatcher,
-    SnapshotInfo, SteamGridDbClient, SyncReport, TokenStore,
+    AdapterType, Conflict, CoverSearch, DROPBOX_ACCOUNT, DiscoveredGame, DropboxProvider,
+    GRID_UNAVAILABLE_MESSAGE, Game, GoogleDriveProvider, HttpTransport, KeyringTokenStore,
+    MemoryTokenStore, OAuthConfig, OAuthFlow, ReqwestTransport, RestoreReport, Revision,
+    SaveSyncEngine, SaveWatcher, SnapshotInfo, SteamGridDbClient, SyncReport, TokenStore,
+    WEBDAV_ACCOUNT, WebDavProvider,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tauri::http::header::{CACHE_CONTROL, CONTENT_TYPE, HeaderValue};
 use tauri::http::{Response, StatusCode};
 use tauri::{Emitter, Manager};
 
 const GOOGLE_CLIENT_ID_KEY: &str = "google_client_id";
+/// Non-secret provider configuration. The settings table is a generic key/value
+/// store, so adding these keys needs no schema migration. Secrets never go here.
+const DROPBOX_APP_KEY_SETTING: &str = "dropbox.app_key";
+const WEBDAV_ENDPOINT_SETTING: &str = "webdav.endpoint";
+const WEBDAV_USERNAME_SETTING: &str = "webdav.username";
+const ACTIVE_PROVIDER_SETTING: &str = "active_provider";
+
 const OAUTH_TIMEOUT: Duration = Duration::from_secs(300);
 /// Cover-art downloads are bounded by the transport, not left to hang.
 const ARTWORK_TIMEOUT: Duration = Duration::from_secs(60);
@@ -55,9 +63,24 @@ struct Inner {
     /// SteamGridDB key store. Kept separate from the Google store so the two
     /// credentials cannot overwrite each other's keyring entry.
     artwork_credentials: Arc<dyn TokenStore>,
+    /// Dropbox refresh token. A separate keyring item from Google's, so the two
+    /// providers can be connected at the same time.
+    dropbox_credentials: Arc<dyn TokenStore>,
+    /// WebDAV HTTP Basic password. Also a separate keyring item; the endpoint
+    /// and username are non-secret and live in the settings table.
+    webdav_credentials: Arc<dyn TokenStore>,
     transport: Arc<dyn HttpTransport>,
     client_id: Mutex<Option<String>>,
     oauth: Mutex<OAuthRuntime>,
+    /// Dropbox app key and OAuth progress. Mirrors the Google fields.
+    dropbox_app_key: Mutex<Option<String>>,
+    dropbox_oauth: Mutex<OAuthRuntime>,
+    /// Non-secret WebDAV configuration, mirrored from the settings table.
+    webdav_endpoint: Mutex<Option<String>>,
+    webdav_username: Mutex<Option<String>>,
+    /// Provider `sync_game` dispatches to. Persisted so the choice survives a
+    /// restart; defaults to Google Drive.
+    active_provider: Mutex<ProviderKind>,
     startup_warning: Mutex<Option<String>>,
 }
 
@@ -65,6 +88,54 @@ struct Inner {
 struct OAuthRuntime {
     pending: bool,
     connected: bool,
+    error: Option<String>,
+}
+
+/// Which remote provider the Cloud view and `sync_game` operate on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProviderKind {
+    #[serde(rename = "google")]
+    Google,
+    #[serde(rename = "dropbox")]
+    Dropbox,
+    #[serde(rename = "webdav")]
+    WebDav,
+}
+
+impl ProviderKind {
+    /// Stable wire/settings form. Matches the serde representation exactly.
+    fn as_str(self) -> &'static str {
+        match self {
+            ProviderKind::Google => "google",
+            ProviderKind::Dropbox => "dropbox",
+            ProviderKind::WebDav => "webdav",
+        }
+    }
+
+    /// Parse a persisted setting value leniently; unknown values fall back to
+    /// the caller's default rather than failing startup.
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "google" => Some(ProviderKind::Google),
+            "dropbox" => Some(ProviderKind::Dropbox),
+            "webdav" => Some(ProviderKind::WebDav),
+            _ => None,
+        }
+    }
+}
+
+/// Provider status shared by every backend. Carries only flags and the
+/// non-secret identifier, never a token or password.
+#[derive(Debug, Serialize)]
+struct ProviderStatus {
+    kind: ProviderKind,
+    /// OAuth client id / app key / WebDAV endpoint, for settings display.
+    identifier: Option<String>,
+    /// Non-secret configuration is present (client id, app key, endpoint).
+    configured: bool,
+    /// A credential is stored and sync can run.
+    connected: bool,
+    pending: bool,
     error: Option<String>,
 }
 
@@ -461,6 +532,344 @@ fn disconnect_google(state: tauri::State<'_, AppState>) -> Result<GoogleStatus, 
     })
 }
 
+impl Inner {
+    /// Non-secret Google status in the shared shape. `google_status` keeps its
+    /// own legacy shape; this is only used where the Cloud view needs one type.
+    fn google_provider_status(&self) -> Result<ProviderStatus, String> {
+        let client_id = self.client_id.lock().map_err(lock_error)?.clone();
+        let oauth = self.oauth.lock().map_err(lock_error)?;
+        Ok(ProviderStatus {
+            kind: ProviderKind::Google,
+            configured: client_id.is_some(),
+            identifier: client_id,
+            connected: oauth.connected,
+            pending: oauth.pending,
+            error: oauth.error.clone(),
+        })
+    }
+
+    fn dropbox_status(&self) -> Result<ProviderStatus, String> {
+        let app_key = self.dropbox_app_key.lock().map_err(lock_error)?.clone();
+        // Only the presence of the token is observed; its value never leaves
+        // this call. A keyring failure is reported as "not connected" plus a
+        // generic message instead of failing the whole status read: the Cloud
+        // view must still render (and sync must stay disabled) on a machine
+        // whose keyring is unavailable.
+        let (token_present, keyring_error) = match self.dropbox_credentials.load() {
+            Ok(token) => (token.is_some(), None),
+            Err(_) => (
+                false,
+                Some("Could not read the Dropbox sign-in from the OS keyring.".to_string()),
+            ),
+        };
+        let oauth = self.dropbox_oauth.lock().map_err(lock_error)?;
+        Ok(ProviderStatus {
+            kind: ProviderKind::Dropbox,
+            configured: app_key.is_some(),
+            identifier: app_key,
+            connected: token_present,
+            pending: oauth.pending,
+            error: oauth.error.clone().or(keyring_error),
+        })
+    }
+
+    fn webdav_status(&self) -> Result<ProviderStatus, String> {
+        let endpoint = self.webdav_endpoint.lock().map_err(lock_error)?.clone();
+        let username = self.webdav_username.lock().map_err(lock_error)?.clone();
+        let configured = endpoint.is_some() && username.is_some();
+        // No configuration means nothing to authenticate with, so the keyring is
+        // not consulted at all.
+        let (password_present, keyring_error) = if configured {
+            match self.webdav_credentials.load() {
+                Ok(password) => (password.is_some(), None),
+                Err(_) => (
+                    false,
+                    Some("Could not read the WebDAV password from the OS keyring.".to_string()),
+                ),
+            }
+        } else {
+            (false, None)
+        };
+        Ok(ProviderStatus {
+            kind: ProviderKind::WebDav,
+            identifier: endpoint,
+            configured,
+            connected: password_present,
+            pending: false,
+            error: keyring_error,
+        })
+    }
+
+    fn provider_status(&self, kind: ProviderKind) -> Result<ProviderStatus, String> {
+        match kind {
+            ProviderKind::Google => self.google_provider_status(),
+            ProviderKind::Dropbox => self.dropbox_status(),
+            ProviderKind::WebDav => self.webdav_status(),
+        }
+    }
+
+    fn set_active_provider(&self, kind: ProviderKind) -> Result<ProviderStatus, String> {
+        {
+            let mut engine = self.engine.lock().map_err(lock_error)?;
+            engine
+                .set_setting(ACTIVE_PROVIDER_SETTING, kind.as_str())
+                .map_err(stringify)?;
+        }
+        *self.active_provider.lock().map_err(lock_error)? = kind;
+        self.provider_status(kind)
+    }
+
+    fn active_provider(&self) -> Result<ProviderKind, String> {
+        Ok(*self.active_provider.lock().map_err(lock_error)?)
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn set_dropbox_app_key(
+    state: tauri::State<'_, AppState>,
+    app_key: String,
+) -> Result<ProviderStatus, String> {
+    let app_key = app_key.trim().to_string();
+    if app_key.is_empty() {
+        return Err("Dropbox app key may not be empty".into());
+    }
+    if state
+        .inner
+        .dropbox_oauth
+        .lock()
+        .map_err(lock_error)?
+        .pending
+    {
+        return Err(
+            "Wait for the current Dropbox sign-in to finish before changing the app key".into(),
+        );
+    }
+
+    let previous = state
+        .inner
+        .dropbox_app_key
+        .lock()
+        .map_err(lock_error)?
+        .clone();
+    if previous.as_deref() != Some(app_key.as_str()) {
+        // A refresh token issued to a different app key is unusable.
+        let _ = state.inner.dropbox_credentials.delete();
+        state
+            .inner
+            .dropbox_oauth
+            .lock()
+            .map_err(lock_error)?
+            .connected = false;
+    }
+
+    {
+        let mut engine = state.inner.engine.lock().map_err(lock_error)?;
+        engine
+            .set_setting(DROPBOX_APP_KEY_SETTING, &app_key)
+            .map_err(stringify)?;
+    }
+    *state.inner.dropbox_app_key.lock().map_err(lock_error)? = Some(app_key);
+
+    state.inner.dropbox_status()
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn dropbox_status(state: tauri::State<'_, AppState>) -> Result<ProviderStatus, String> {
+    state.inner.dropbox_status()
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn begin_dropbox_oauth(state: tauri::State<'_, AppState>) -> Result<OAuthStart, String> {
+    let app_key = state
+        .inner
+        .dropbox_app_key
+        .lock()
+        .map_err(lock_error)?
+        .clone()
+        .ok_or_else(|| "Save a Dropbox app key first".to_string())?;
+
+    {
+        let oauth = state.inner.dropbox_oauth.lock().map_err(lock_error)?;
+        if oauth.pending {
+            return Err("A Dropbox sign-in is already in progress".into());
+        }
+    }
+
+    let flow = OAuthFlow::start(OAuthConfig::dropbox(&app_key)).map_err(stringify)?;
+    let auth_url = flow.authorization_url().map_err(stringify)?;
+    let redirect_uri = flow.redirect_uri().to_string();
+
+    {
+        let mut oauth = state.inner.dropbox_oauth.lock().map_err(lock_error)?;
+        oauth.pending = true;
+        oauth.error = None;
+    }
+
+    if let Err(error) = open::that(&auth_url) {
+        eprintln!("could not open the system browser: {error}");
+    }
+
+    let inner = state.inner.clone();
+    std::thread::spawn(move || {
+        let result = flow.finish(inner.transport.as_ref(), OAUTH_TIMEOUT);
+        let mut oauth = inner.dropbox_oauth.lock().expect("oauth mutex");
+        oauth.pending = false;
+        match result {
+            Ok(tokens) => match tokens.refresh_token {
+                Some(refresh) => match inner.dropbox_credentials.save(&refresh) {
+                    Ok(()) => {
+                        oauth.connected = true;
+                        oauth.error = None;
+                    }
+                    Err(error) => {
+                        oauth.error = Some(format!(
+                            "Dropbox sign-in succeeded, but the refresh token could not be saved: {error}"
+                        ));
+                    }
+                },
+                None => {
+                    oauth.error = Some(
+                        "Dropbox did not return a refresh token. Remove SaveSync from your Dropbox app permissions and try again."
+                            .into(),
+                    );
+                }
+            },
+            Err(error) => {
+                oauth.error = Some(error.to_string());
+            }
+        }
+    });
+
+    Ok(OAuthStart {
+        auth_url,
+        redirect_uri,
+    })
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn disconnect_dropbox(state: tauri::State<'_, AppState>) -> Result<ProviderStatus, String> {
+    {
+        let oauth = state.inner.dropbox_oauth.lock().map_err(lock_error)?;
+        if oauth.pending {
+            return Err(
+                "Wait for the current Dropbox sign-in to finish before disconnecting".into(),
+            );
+        }
+    }
+    state
+        .inner
+        .dropbox_credentials
+        .delete()
+        .map_err(stringify)?;
+    state
+        .inner
+        .dropbox_oauth
+        .lock()
+        .map_err(lock_error)?
+        .connected = false;
+    let mut status = state.inner.dropbox_status()?;
+    status.error = None;
+    Ok(status)
+}
+
+/// Persist the non-secret WebDAV configuration and, when supplied, the password
+/// in the OS keyring.
+///
+/// A blank username or password keeps the stored value, so changing only the
+/// endpoint does not require retyping a secret (and the UI never has to hold
+/// one). The candidate settings are validated by building a provider first: a
+/// bad endpoint is rejected before anything is persisted.
+#[tauri::command(rename_all = "snake_case")]
+fn set_webdav_config(
+    state: tauri::State<'_, AppState>,
+    endpoint: String,
+    username: String,
+    password: String,
+) -> Result<ProviderStatus, String> {
+    let endpoint = endpoint.trim().to_string();
+    if endpoint.is_empty() {
+        return Err("WebDAV endpoint may not be empty".into());
+    }
+    // A blank username keeps the stored one, so re-authenticating after a
+    // disconnect only needs the password.
+    let username = {
+        let typed = username.trim().to_string();
+        if typed.is_empty() {
+            state
+                .inner
+                .webdav_username
+                .lock()
+                .map_err(lock_error)?
+                .clone()
+                .ok_or_else(|| "WebDAV username may not be empty".to_string())?
+        } else {
+            typed
+        }
+    };
+
+    let stored_password = state
+        .inner
+        .webdav_credentials
+        .load()
+        .map_err(|_| "Could not read the WebDAV password from the OS keyring.".to_string())?;
+    let effective_password = if password.is_empty() {
+        stored_password
+            .clone()
+            .ok_or_else(|| "Enter the WebDAV password.".to_string())?
+    } else {
+        password
+    };
+
+    // Validation only; the provider is dropped immediately. Core errors here
+    // concern the endpoint or username and never echo the password.
+    WebDavProvider::production(&endpoint, &username, &effective_password).map_err(stringify)?;
+
+    if stored_password.as_deref() != Some(effective_password.as_str()) {
+        state
+            .inner
+            .webdav_credentials
+            .save(&effective_password)
+            .map_err(|_| "Could not save the WebDAV password to the OS keyring.".to_string())?;
+    }
+    {
+        let mut engine = state.inner.engine.lock().map_err(lock_error)?;
+        engine
+            .set_setting(WEBDAV_ENDPOINT_SETTING, &endpoint)
+            .map_err(stringify)?;
+        engine
+            .set_setting(WEBDAV_USERNAME_SETTING, &username)
+            .map_err(stringify)?;
+    }
+    *state.inner.webdav_endpoint.lock().map_err(lock_error)? = Some(endpoint);
+    *state.inner.webdav_username.lock().map_err(lock_error)? = Some(username);
+
+    state.inner.webdav_status()
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn webdav_status(state: tauri::State<'_, AppState>) -> Result<ProviderStatus, String> {
+    state.inner.webdav_status()
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn disconnect_webdav(state: tauri::State<'_, AppState>) -> Result<ProviderStatus, String> {
+    state.inner.webdav_credentials.delete().map_err(stringify)?;
+    state.inner.webdav_status()
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn set_active_provider(
+    state: tauri::State<'_, AppState>,
+    provider: ProviderKind,
+) -> Result<ProviderStatus, String> {
+    state.inner.set_active_provider(provider)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn active_provider(state: tauri::State<'_, AppState>) -> Result<ProviderKind, String> {
+    state.inner.active_provider()
+}
+
 /// Report whether an API key is stored, without ever loading the key into a
 /// value that could be logged or serialized. The underlying store error is
 /// discarded: it is not guaranteed key-free.
@@ -655,7 +1064,21 @@ impl Inner {
         engine.discover_games().map_err(stringify)
     }
 
+    /// Sync one game with whichever provider the user selected.
+    ///
+    /// The Google branch is the original code path, unchanged; the other two are
+    /// built from the same settings/keyring data and use the core providers'
+    /// own default timeouts and retry policies.
     fn sync_game(&self, game_id: &str) -> Result<SyncReport, String> {
+        let provider = *self.active_provider.lock().map_err(lock_error)?;
+        match provider {
+            ProviderKind::Google => self.sync_with_google(game_id),
+            ProviderKind::Dropbox => self.sync_with_dropbox(game_id),
+            ProviderKind::WebDav => self.sync_with_webdav(game_id),
+        }
+    }
+
+    fn sync_with_google(&self, game_id: &str) -> Result<SyncReport, String> {
         let client_id = self
             .client_id
             .lock()
@@ -669,6 +1092,47 @@ impl Inner {
             .ok_or_else(|| "Connect Google Drive first".to_string())?;
         let provider =
             GoogleDriveProvider::production(&client_id, &refresh_token).map_err(stringify)?;
+        let mut engine = self.engine.lock().map_err(lock_error)?;
+        engine.sync(&provider, game_id).map_err(stringify)
+    }
+
+    fn sync_with_dropbox(&self, game_id: &str) -> Result<SyncReport, String> {
+        let app_key = self
+            .dropbox_app_key
+            .lock()
+            .map_err(lock_error)?
+            .clone()
+            .ok_or_else(|| "Save a Dropbox app key first".to_string())?;
+        let refresh_token = self
+            .dropbox_credentials
+            .load()
+            .map_err(stringify)?
+            .ok_or_else(|| "Connect Dropbox first".to_string())?;
+        let provider = DropboxProvider::production(&app_key, &refresh_token).map_err(stringify)?;
+        let mut engine = self.engine.lock().map_err(lock_error)?;
+        engine.sync(&provider, game_id).map_err(stringify)
+    }
+
+    fn sync_with_webdav(&self, game_id: &str) -> Result<SyncReport, String> {
+        let endpoint = self
+            .webdav_endpoint
+            .lock()
+            .map_err(lock_error)?
+            .clone()
+            .ok_or_else(|| "Configure WebDAV in Cloud sync first".to_string())?;
+        let username = self
+            .webdav_username
+            .lock()
+            .map_err(lock_error)?
+            .clone()
+            .ok_or_else(|| "Configure WebDAV in Cloud sync first".to_string())?;
+        let password = self
+            .webdav_credentials
+            .load()
+            .map_err(|_| "Could not read the WebDAV password from the OS keyring.".to_string())?
+            .ok_or_else(|| "Connect WebDAV first".to_string())?;
+        let provider =
+            WebDavProvider::production(&endpoint, &username, &password).map_err(stringify)?;
         let mut engine = self.engine.lock().map_err(lock_error)?;
         engine.sync(&provider, game_id).map_err(stringify)
     }
@@ -945,6 +1409,14 @@ pub fn run() {
                 .map(|error| format!("Recovery on startup failed: {error}"));
 
             let client_id = engine.setting(GOOGLE_CLIENT_ID_KEY)?;
+            let dropbox_app_key = engine.setting(DROPBOX_APP_KEY_SETTING)?;
+            let webdav_endpoint = engine.setting(WEBDAV_ENDPOINT_SETTING)?;
+            let webdav_username = engine.setting(WEBDAV_USERNAME_SETTING)?;
+            // An unknown or absent value keeps the original behaviour: Google.
+            let active_provider = engine
+                .setting(ACTIVE_PROVIDER_SETTING)?
+                .and_then(|value| ProviderKind::parse(&value))
+                .unwrap_or(ProviderKind::Google);
             let memory_tokens = std::env::var("SAVESYNC_MEMORY_TOKENS").is_ok_and(|value| value == "1");
             let credentials: Arc<dyn TokenStore> = if memory_tokens {
                 Arc::new(MemoryTokenStore::default())
@@ -961,7 +1433,26 @@ pub fn run() {
                     STEAMGRIDDB_ACCOUNT,
                 ))
             };
+            // Dropbox and WebDAV credentials get their own keyring accounts, so
+            // connecting one provider cannot disturb another.
+            let dropbox_credentials: Arc<dyn TokenStore> = if memory_tokens {
+                Arc::new(MemoryTokenStore::default())
+            } else {
+                Arc::new(KeyringTokenStore::new(
+                    savesync_core::SERVICE,
+                    DROPBOX_ACCOUNT,
+                ))
+            };
+            let webdav_credentials: Arc<dyn TokenStore> = if memory_tokens {
+                Arc::new(MemoryTokenStore::default())
+            } else {
+                Arc::new(KeyringTokenStore::new(
+                    savesync_core::SERVICE,
+                    WEBDAV_ACCOUNT,
+                ))
+            };
             let connected = credentials.load().unwrap_or(None).is_some();
+            let dropbox_connected = dropbox_credentials.load().unwrap_or(None).is_some();
             let transport: Arc<dyn HttpTransport> = Arc::new(ReqwestTransport::default());
 
             // Start the save watcher
@@ -994,6 +1485,8 @@ pub fn run() {
                     watcher: Mutex::new(watcher),
                     credentials,
                     artwork_credentials,
+                    dropbox_credentials,
+                    webdav_credentials,
                     transport,
                     client_id: Mutex::new(client_id),
                     oauth: Mutex::new(OAuthRuntime {
@@ -1001,6 +1494,15 @@ pub fn run() {
                         connected,
                         error: None,
                     }),
+                    dropbox_app_key: Mutex::new(dropbox_app_key),
+                    dropbox_oauth: Mutex::new(OAuthRuntime {
+                        pending: false,
+                        connected: dropbox_connected,
+                        error: None,
+                    }),
+                    webdav_endpoint: Mutex::new(webdav_endpoint),
+                    webdav_username: Mutex::new(webdav_username),
+                    active_provider: Mutex::new(active_provider),
                     startup_warning: Mutex::new(startup_warning),
                 }),
             });
@@ -1024,6 +1526,15 @@ pub fn run() {
             begin_google_oauth,
             open_auth_url,
             disconnect_google,
+            set_dropbox_app_key,
+            dropbox_status,
+            begin_dropbox_oauth,
+            disconnect_dropbox,
+            set_webdav_config,
+            webdav_status,
+            disconnect_webdav,
+            set_active_provider,
+            active_provider,
             set_steamgriddb_api_key,
             steamgriddb_status,
             clear_steamgriddb_api_key,
@@ -1054,6 +1565,59 @@ mod tests {
             Some(AdapterType::CustomDirectory)
         );
         assert!(AdapterType::parse("whatever").is_none());
+    }
+
+    /// The persisted setting and the IPC wire form are the same strings, so a
+    /// stored value always parses back to the same provider.
+    #[test]
+    fn provider_kinds_round_trip_through_their_wire_form() {
+        for kind in [
+            ProviderKind::Google,
+            ProviderKind::Dropbox,
+            ProviderKind::WebDav,
+        ] {
+            let json = serde_json::to_string(&kind).unwrap();
+            assert_eq!(json, format!("\"{}\"", kind.as_str()));
+            assert_eq!(ProviderKind::parse(kind.as_str()), Some(kind));
+        }
+        assert_eq!(ProviderKind::parse(" GOOGLE "), Some(ProviderKind::Google));
+        // Unknown values must not silently select a provider.
+        assert_eq!(ProviderKind::parse("s3"), None);
+        assert_eq!(ProviderKind::parse(""), None);
+
+        // The IPC payload is just as strict: a provider the shell does not know
+        // is rejected rather than coerced to a default, so a bad request can
+        // never switch the active backend behind the user's back.
+        assert!(serde_json::from_str::<ProviderKind>("\"s3\"").is_err());
+        assert!(serde_json::from_str::<ProviderKind>("\"Google\"").is_err());
+        assert_eq!(
+            serde_json::from_str::<ProviderKind>("\"webdav\"").unwrap(),
+            ProviderKind::WebDav
+        );
+    }
+
+    /// The status shape crosses IPC, so it must carry flags and the non-secret
+    /// identifier only. A credential field would show up in the JSON body.
+    #[test]
+    fn provider_status_never_serializes_a_secret_field() {
+        let status = ProviderStatus {
+            kind: ProviderKind::WebDav,
+            identifier: Some("https://dav.example.com/savesync".into()),
+            configured: true,
+            connected: true,
+            pending: false,
+            error: None,
+        };
+        let json = serde_json::to_string(&status).unwrap();
+
+        assert!(json.contains("\"webdav\""));
+        assert!(json.contains("https://dav.example.com/savesync"));
+        for forbidden in ["password", "token", "secret"] {
+            assert!(
+                !json.to_lowercase().contains(forbidden),
+                "leaked {forbidden}"
+            );
+        }
     }
 
     #[test]

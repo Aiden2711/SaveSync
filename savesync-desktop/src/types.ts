@@ -69,6 +69,23 @@ export interface GoogleStatus {
   error: string | null;
 }
 
+/** Remote provider the Cloud view is operating on. Matches the Rust enum. */
+export type ProviderKind = "google" | "dropbox" | "webdav";
+
+/**
+ * Provider status shared by every backend. Carries the non-secret identifier
+ * (client id, app key, endpoint) and flags only: a token or password is never
+ * part of this shape.
+ */
+export interface ProviderStatus {
+  kind: ProviderKind;
+  identifier: string | null;
+  configured: boolean;
+  connected: boolean;
+  pending: boolean;
+  error: string | null;
+}
+
 /**
  * Whether a SteamGridDB API key is stored in the OS keyring. The key itself is
  * never sent to the frontend: this shape deliberately carries only a flag.

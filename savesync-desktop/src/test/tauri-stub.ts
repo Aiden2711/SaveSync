@@ -19,6 +19,8 @@ import type {
   CoverSearch,
   Game,
   GoogleStatus,
+  ProviderKind,
+  ProviderStatus,
   RestoreReport,
   Revision,
 } from "../types";
@@ -55,6 +57,36 @@ const google: GoogleStatus = {
   pending: false,
   error: null,
 };
+
+/**
+ * Provider state for the Cloud view. Reset by `installTauriStub` so one file's
+ * choices never leak into another's assertions.
+ */
+function defaultDropboxStatus(): ProviderStatus {
+  return {
+    kind: "dropbox",
+    identifier: null,
+    configured: false,
+    connected: false,
+    pending: false,
+    error: null,
+  };
+}
+
+function defaultWebdavStatus(): ProviderStatus {
+  return {
+    kind: "webdav",
+    identifier: null,
+    configured: false,
+    connected: false,
+    pending: false,
+    error: null,
+  };
+}
+
+let activeProvider: ProviderKind = "google";
+let dropboxStatus: ProviderStatus = defaultDropboxStatus();
+let webdavStatus: ProviderStatus = defaultWebdavStatus();
 
 const games: Game[] = [
   {
@@ -205,6 +237,23 @@ export function failArtworkKeySave(message: string): void {
   artworkSaveError = message;
 }
 
+/** Mark Dropbox connected, as the real flow does once sign-in completes. */
+export function seedDropboxConnected(identifier = "test-app-key"): void {
+  dropboxStatus = {
+    kind: "dropbox",
+    identifier,
+    configured: true,
+    connected: true,
+    pending: false,
+    error: null,
+  };
+}
+
+/** Choose the provider the stub reports as active before rendering. */
+export function seedActiveProvider(kind: ProviderKind): void {
+  activeProvider = kind;
+}
+
 /**
  * Seed a cached cover for one game before rendering.
  *
@@ -312,9 +361,86 @@ function setCoverPath(gameId: string, coverPath: string | null): Game {
 
 type Handler = (args: Record<string, unknown>) => unknown;
 
+/** Status of the provider a command would report, matching the Rust shapes. */
+function providerStatus(kind: ProviderKind): ProviderStatus {
+  if (kind === "dropbox") return dropboxStatus;
+  if (kind === "webdav") return webdavStatus;
+  return {
+    kind: "google",
+    identifier: google.client_id,
+    configured: google.client_id !== null,
+    connected: google.connected,
+    pending: google.pending,
+    error: google.error,
+  };
+}
+
 const handlers: Record<string, Handler> = {
   get_status: () => status,
   google_status: () => google,
+  active_provider: () => activeProvider,
+  set_active_provider: (args) => {
+    const next = args.provider;
+    if (next !== "google" && next !== "dropbox" && next !== "webdav") {
+      throw new Error(`Tauri stub: unknown provider "${String(next)}"`);
+    }
+    activeProvider = next;
+    return providerStatus(next);
+  },
+  dropbox_status: () => dropboxStatus,
+  set_dropbox_app_key: (args) => {
+    const key = typeof args.app_key === "string" ? args.app_key.trim() : "";
+    if (!key) {
+      throw new Error("Dropbox app key may not be empty");
+    }
+    // Mirrors the command: a different app key invalidates the old token.
+    const tokenSurvives = dropboxStatus.identifier === key;
+    dropboxStatus = {
+      kind: "dropbox",
+      identifier: key,
+      configured: true,
+      connected: tokenSurvives && dropboxStatus.connected,
+      pending: false,
+      error: null,
+    };
+    return dropboxStatus;
+  },
+  begin_dropbox_oauth: () => ({
+    auth_url: "https://www.dropbox.com/oauth2/authorize?client_id=test-app-key",
+    redirect_uri: "http://127.0.0.1:53682/callback",
+  }),
+  disconnect_dropbox: () => {
+    dropboxStatus = { ...dropboxStatus, connected: false, pending: false, error: null };
+    return dropboxStatus;
+  },
+  webdav_status: () => webdavStatus,
+  set_webdav_config: (args) => {
+    const endpoint = typeof args.endpoint === "string" ? args.endpoint.trim() : "";
+    if (!endpoint) {
+      throw new Error("WebDAV endpoint may not be empty");
+    }
+    const username = typeof args.username === "string" ? args.username.trim() : "";
+    const password = typeof args.password === "string" ? args.password : "";
+    if (!username && !webdavStatus.configured) {
+      throw new Error("WebDAV username may not be empty");
+    }
+    if (!password && !webdavStatus.connected) {
+      throw new Error("Enter the WebDAV password.");
+    }
+    webdavStatus = {
+      kind: "webdav",
+      identifier: endpoint,
+      configured: true,
+      connected: true,
+      pending: false,
+      error: null,
+    };
+    return webdavStatus;
+  },
+  disconnect_webdav: () => {
+    webdavStatus = { ...webdavStatus, connected: false, error: null };
+    return webdavStatus;
+  },
   list_games: () => games,
   list_dirty_games: () => dirtyGameIds,
   history: (args) => {
@@ -407,6 +533,9 @@ export function installTauriStub(): InvokeCall[] {
   const calls: InvokeCall[] = [];
   artworkStatus = { configured: false };
   artworkSaveError = null;
+  activeProvider = "google";
+  dropboxStatus = defaultDropboxStatus();
+  webdavStatus = defaultWebdavStatus();
 
   // Handlers mutate the shared fixture array, so reset it in place from the
   // pristine copy: tests must not observe a previous file's cover state.

@@ -1,42 +1,41 @@
 <!DOCTYPE html>
 <!--
   WCAG 2.1 AA contrast verification — measured sRGB ratios (WCAG 2.1 relative luminance).
-  Text pairs (require >= 4.5:1 at every size used):
-    #101720 on #ffffff ................. 18.02:1  (headings, default UI text)
-    #465468 on #ffffff .................  7.70:1  (inactive labels, tile meta)
-    #5f6d80 on #ffffff .................  5.27:1  (eyebrows, timestamps, paths)
-    #101720 on #f4f7fb ................. 16.77:1  (section and tile titles on page base)
-    #465468 on #f4f7fb .................  7.16:1  (tile meta, body copy on page base)
-    #5f6d80 on #f4f7fb .................  4.90:1  (eyebrows on page base)
-    #465468 on #eef3fa .................  6.90:1  (chips / tinted rows)
-    #5f6d80 on #eef3fa .................  4.73:1  (path text on tinted row)
-    #ffffff on #0a6db0 .................  5.49:1  (primary button label)
-    #ffffff on #095f99 .................  6.76:1  (primary hover)
-    #ffffff on #b3261e .................  6.54:1  (danger confirm label)
-    #b3261e on #ffffff .................  6.54:1  (danger text / warning label)
-    #b3261e on #fff2f1 .................  5.98:1  (danger text on warning panel)
-    #ffffff on #8f1d17 .................  8.91:1  (danger hover)
-    #2a66d8 on #f4f7fb .................  4.90:1  (wordmark gradient, blue stop)
-    #7c4de0 on #f4f7fb .................  4.89:1  (wordmark gradient, purple stop)
-    #b8337a on #f4f7fb .................  5.15:1  (wordmark gradient, pink stop)
-    #465468 on #f5f8fd .................  7.23:1  (quiet button ink on the glass detail panel,
-                                                  worst case: 80% white over the tinted wash)
-    #5f6d80 on #f5f8fd .................  4.95:1  (detail kicker on the same glass worst case)
-  Portrait cover monograms (the 2:3 art is a gradient, so it is measured conservatively):
-    #131c29 on the cover's white plate ..  9.10:1  (lowest of all 10 tile monograms; the plate is
-                                                    a flat 55% white over the deepest composite the
-                                                    art stack can produce, so the ratio holds
-                                                    wherever a monogram can sit at any breakpoint.
-                                                    Detail cover: 10.34:1)
-  The selected tile's "Jump back in!" pill is opaque #ffffff with #101720 ink, so its label sits on
-  flat white (18.02:1 above) and never on the gradient art. The pill overlaps the cover as decoration.
-  Bottom band: one ink set for navigation; state is carried by the well, not a hue.
-    #465468 on #eaf0f8 (band base) .....  6.71:1  (nav icons/labels at rest, status text)
-    #465468 on #eef3fa (current well) ..  6.90:1  (current destination, hover, band buttons)
-    #101720 on #eaf0f8 ................. 15.72:1  (status counts, current destination label)
-  Pastel gradient tile borders and glow shadows are decoration only; no text sits on them.
-  The wordmark is the single permitted gradient-text treatment, and its refined stops still
-  clear 4.5:1 (the supplied #4f8ef7/#9b6df3/#e06ab8 stops measured only 3.2–3.6:1).
+  This preview mirrors the shipped iiSU light-glass system in src/styles.css, so the tokens,
+  the surfaces and these ratios were recomputed against it. Text pairs (>= 4.5:1 at every size):
+    #0d1522 on #ffffff ................. 18.30:1  (headings, tile titles on a label plate)
+    #3b4a5f on #ffffff .................  9.01:1  (tile meta, chips, quiet button labels)
+    #55657c on #ffffff .................  5.93:1  (eyebrows, paths, dialog meta)
+    #0d1522 on #eef3fa ................. 16.42:1  (section titles on the dotted base)
+    #3b4a5f on #eef3fa .................  8.08:1  (body copy and detail meta on the base)
+    #55657c on #eef3fa .................  5.32:1  (eyebrows on the base)
+    #0d1522 on #fafcfe ................. 17.80:1  (current destination on the dock glass:
+                                                    72% white over --base)
+    #3b4a5f on #fafcfe .................  8.76:1  (resting nav label and status chip on the dock)
+    #0d1522 on #e3ecf7 ................. 15.34:1  (current destination on its --surface-2 well)
+    #3b4a5f on #e3ecf7 .................  7.55:1  (status text inside its --surface chip)
+    #ffffff on #5b21b6 .................  8.98:1  (primary label, --grad-primary start)
+    #ffffff on #a21caf .................  6.32:1  (primary label, --grad-primary end)
+    #b3261e on #ffffff .................  6.54:1  (danger label and warning copy)
+    #0d1522 on #f4f4f4 ................. 16.64:1  (dialog title: --glass-top over --scrim-strong)
+    #3b4a5f on #f4f4f4 .................  8.19:1  (dialog body on the same composite)
+  The top bar and the dock are plain translucent fills (no blur), so their text must also survive
+  whatever scrolls under them. Worst case is the darkest generated cover
+  (--cover-palette-3-bg #101a33) passing beneath:
+    #0d1522 on #f1f1f3 ................. 16.23:1  (top bar ink: --glass-top over that cover)
+    #3b4a5f on #f1f1f3 .................  7.98:1  (top bar meta on the same composite)
+    #0d1522 on #bcbfc6 .................  9.89:1  (dock ink: --glass over that cover)
+    #3b4a5f on #bcbfc6 .................  4.86:1  (dock meta on the same composite)
+  Portrait cover monograms sit on the generated wash, so each is measured against the deepest
+  tone that palette's wash reaches (bg2, the bottom stop):
+    #101720 on #c3d4e8 ................. 11.93:1  (light palette 7)
+    #141f31 on #d0ddee ................. 12.01:1  (light palette 8)
+    #0f1c2b on #b1c7dd .................  9.89:1  (light palette 9, the lowest of all ten)
+    #eef2ff on #2b3568 ................. 10.37:1  (dark palettes, lightest ink)
+  The selected tile's "Jump back in!" pill is opaque #ffffff with #0d1522 ink, so its label sits on
+  flat white and never on the artwork. Nav glyphs are filled with the per-destination --hue-*
+  gradients: decoration only, no text ever sits on them, and the current destination is also
+  marked by the --surface-2 well and by aria-current, never by hue alone.
 -->
 <html lang="en">
 <head>
@@ -49,10 +48,10 @@
 <style>
 /*
  * SaveSync — "System White, Iisu".
- * An Iisu x Wii U blend: glossy white squircles on white, pastel gradient tile
- * borders, glass panels with a hairline gradient outline, one ink navigation
- * set, and generous whitespace. Light theme only; this file is a
- * static design preview and ships nowhere.
+ * The shipped iiSU light-glass system (src/styles.css): cool white glass
+ * surfaces over a dot-grid field, hairline borders instead of heavy frames, a
+ * floating glass dock, a quiet HUD top bar, and multi-gradient accents. This
+ * file is a static design preview and ships nowhere, so it stays light-only.
  */
 
 @font-face {
@@ -65,20 +64,27 @@
 
 :root {
   /* Surfaces */
-  --base: #f4f7fb;
-  --base-2: #eaf0f8;
+  --base: #eef3fa;
+  --base-2: #e2ebf7;
   --surface: #ffffff;
   --surface-2: #eef3fa;
-  --line: #d8e2ef;
+  --line: rgba(100, 116, 139, 0.25);
+  --line-strong: #64748b;
+  --hairline: rgba(100, 116, 139, 0.22);
+  /* In-flow glass (panels, dock, top bar) and top-layer glass (dialog, menu),
+     which needs more body because it can sit over cover art or over the scrim. */
+  --glass: rgba(255, 255, 255, 0.72);
+  --glass-top: rgba(255, 255, 255, 0.94);
 
   /* Ink */
-  --ink: #101720;
-  --ink-2: #465468;
-  --ink-3: #5f6d80;
+  --ink: #0d1522;
+  --ink-2: #3b4a5f;
+  --ink-3: #55657c;
+  --ink-inverse: #ffffff;
 
   /* Accents */
-  --accent: #0a6db0;
-  --accent-hover: #095f99;
+  --accent: #1259c4;
+  --accent-hover: #2a6fd6;
   --accent-ink: #ffffff;
   --danger: #b3261e;
   --danger-hover: #8f1d17;
@@ -86,12 +92,61 @@
   --danger-surface: #fff2f1;
   --danger-line: #f3c9c4;
 
-  --focus-ring: #0a6db0;
+  --focus-ring: #1259c4;
 
-  /* Wordmark chrome (refined for 4.5:1; see the ratio block above). */
-  --mark-blue: #2a66d8;
-  --mark-purple: #7c4de0;
-  --mark-pink: #b8337a;
+  /* Scrims. The strong one lands under a dialog, so the field reads as blocked. */
+  --scrim: rgba(20, 30, 44, 0.28);
+  --scrim-strong: rgba(4, 7, 11, 0.72);
+
+  /* The dot-grid field: one radial dot, tiled by `background-size` on body. */
+  --dot-grid: radial-gradient(
+    circle at center,
+    rgba(38, 64, 102, 0.16) 0,
+    rgba(38, 64, 102, 0.16) 0.75px,
+    transparent 0.75px
+  );
+
+  /* Multi-gradient accents. Gradients never carry text, except --grad-primary,
+     which is built to sit under --primary-ink. */
+  --grad-warm: linear-gradient(135deg, #5b21b6, #a21caf, #22d3ee);
+  --grad-cool: linear-gradient(135deg, #0ea5e9, #22d3ee);
+  --grad-gold: linear-gradient(135deg, #f59e0b, #fbbf24);
+  --grad-teal: linear-gradient(135deg, #0d9488, #14b8a6);
+  --grad-rose: linear-gradient(135deg, #e11d48, #fb7185);
+  --grad-primary: linear-gradient(90deg, #5b21b6, #a21caf);
+  --primary-ink: #ffffff;
+
+  /* Wordmark only — the single sanctioned exception to "gradients never carry
+     text", because the iiSU logo is gradient lettering. Same stops as the
+     shipped `--grad-brand` in src/styles.css (light set). */
+  --grad-brand-1: #2f7fe0;
+  --grad-brand-2: #8b5cf6;
+  --grad-brand-3: #ec4899;
+  --grad-brand: linear-gradient(
+    112deg,
+    var(--grad-brand-1) 0%,
+    var(--grad-brand-2) 50%,
+    var(--grad-brand-3) 100%
+  );
+
+  /* Badge tiles (nav glyphs, theme toggle): sheen/lift layers plus the neutral
+     pair the theme toggle uses. The hues themselves come from --hue-* below. */
+  --badge-inset: inset 0 1px 0 rgba(255, 255, 255, 0.42);
+  --badge-lift: 0 2px 6px rgba(16, 23, 32, 0.22);
+  --badge-neutral-1: #475569;
+  --badge-neutral-2: #64748b;
+
+  /* Destination hues: one stable gradient per nav glyph, shared with the app.
+     This preview has four destinations, so it declares four pairs — the app's
+     --hue-conflicts-* pair has no glyph here and is deliberately absent. */
+  --hue-library-1: #6d28d9;
+  --hue-library-2: #c026d3;
+  --hue-snapshots-1: #0e7490;
+  --hue-snapshots-2: #0369a1;
+  --hue-cloud-1: #0f766e;
+  --hue-cloud-2: #0d9488;
+  --hue-settings-1: #be123c;
+  --hue-settings-2: #db2777;
 
   --font-display: "Fredoka", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
   --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
@@ -107,35 +162,32 @@
   --text-xl: 28px;
   --text-2xl: 34px;
 
-  --radius-panel: 24px;
-  --radius-dialog: 16px;
+  /* Controls 8px, tiles and panels 12px, dialogs 16px. Nothing pill-shaped
+     except the status chip and the dirty-state dot. */
   --radius-control: 8px;
+  --radius-panel: 12px;
+  --radius-dialog: 16px;
   --radius-pill: 999px;
 
   /* Portrait covers. 2:3 is the SteamGridDB portrait grid (600x900) — the exact
      shape the artwork pipeline requests (PORTRAIT_DIMENSIONS in
      savesync-core/src/artwork.rs) — so the mockup's covers match real fetched key
-     art instead of a square placeholder. Portrait squircles want less corner
-     rounding than 1:1 did: ~15% of the cover's height keeps the Wii U chrome,
-     while 20-22% on a tall cover pinches both long edges and reads as a pill.
-     Percent radii are elliptical, so the horizontal value is 1.5x the vertical
-     one — that is the only way to get circular corners on a 2:3 box. */
+     art. Slots take the shared radii directly: the frame is a panel, the art
+     inside it one step tighter, exactly as .tile-art / .cover-art ship. */
   --cover-ar: 2 / 3;
-  --cover-radius: 20.25% / 13.5%;
-  --cover-radius-inner: 18% / 12%;
-  --detail-cover-w: 150px;
+  --detail-cover-w: 168px;
 
-  --shadow-near: 0 1px 2px rgba(16, 23, 32, 0.05);
-  --shadow-far: 0 18px 44px rgba(47, 86, 140, 0.14);
+  --shadow-near: 0 1px 2px rgba(16, 23, 32, 0.06);
+  --shadow-far: 0 10px 26px rgba(16, 23, 32, 0.1);
+  --shadow-float: 0 12px 30px rgba(16, 23, 32, 0.12);
 
-  /* The bottom band's height in border-box terms (its 1px top hairline is
-     included), so the page's bottom padding is derived from it rather than
-     guessed: 64px band + 60px of breathing room clears the last row of content
-     at every breakpoint. */
-  --band-h: 64px;
+  /* The floating dock's height in border-box terms plus its 12px inset from the
+     viewport bottom: 56px surface + 12px = 68px, so the page's bottom padding is
+     derived from the real height rather than guessed. */
+  --band-h: 68px;
 
   --dur-fast: 140ms;
-  --dur: 220ms;
+  --dur: 200ms;
   --ease: cubic-bezier(0.2, 0, 0, 1);
 
   /* Cover art palette tokens (from src/lib/cover.ts). The generated covers are
@@ -197,19 +249,20 @@ html {
 body {
   margin: 0;
   min-height: 100vh;
-  /* --band-h + 60px: the edge-docked band never covers content, and .wrap adds
-     its own 60px of bottom padding on top of this for breathing room. */
+  /* --band-h + 60px: the floating dock never covers content — it is inset from
+     the viewport bottom, so the page clears it plus its own 60px of breathing
+     room in .wrap. */
   padding-bottom: calc(var(--band-h) + 60px);
-  background:
-    radial-gradient(90% 60% at 8% -6%, #eaf3ff 0%, transparent 62%),
-    radial-gradient(80% 54% at 96% 4%, #fdeff8 0%, transparent 58%),
-    var(--base);
+  /* Cool light base with the dot-grid field on top, exactly as `body` in
+     src/styles.css paints it: one dot, tiled at 22px, over --base. */
+  background: var(--dot-grid), var(--base);
+  background-size: 22px 22px, auto;
   color: var(--ink);
   font-family: var(--font-ui);
   font-size: var(--text-base);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
-  scrollbar-color: #b9c8dc transparent;
+  scrollbar-color: var(--line-strong) transparent;
 }
 
 h1,
@@ -250,7 +303,7 @@ button {
   left: 12px;
   z-index: 100;
   padding: 10px 18px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-control);
   background: var(--accent);
   color: var(--accent-ink);
   font-size: var(--text-sm);
@@ -266,15 +319,17 @@ button {
 
 /* ---- 01 · Header / wordmark -------------------------------------- */
 
+/* Quiet HUD bar: a plain --glass-top fill, one --hairline bottom border, and no
+   blur. The contrast block at the top of this file carries the composites: at
+   94% white even the darkest generated cover only lifts the bar to #f1f1f3,
+   where --ink-2 still reads at 7.98:1 — so no saturation or blur is needed. */
 .topbar {
   position: sticky;
   top: 0;
   z-index: 40;
-  padding: 14px 0;
-  background: rgba(255, 255, 255, 0.86);
-  border-bottom: 1px solid rgba(216, 226, 239, 0.75);
-  backdrop-filter: blur(20px) saturate(1.15);
-  -webkit-backdrop-filter: blur(20px) saturate(1.15);
+  padding: 12px 0;
+  background: var(--glass-top);
+  border-bottom: 1px solid var(--hairline);
 }
 
 .topbar-inner {
@@ -289,7 +344,9 @@ button {
   flex: none;
 }
 
-/* The one sanctioned gradient text. Fredoka's wide 'S' shapes hold it well. */
+/* Solid ink on the display face. The tagline stays --ink-2; only the wordmark
+   itself carries the brand gradient (see the @supports block below), matching
+   `.brand-name` in src/styles.css. */
 .wordmark {
   font-family: var(--font-display);
   font-size: var(--text-2xl);
@@ -297,23 +354,17 @@ button {
   line-height: 1.06;
   letter-spacing: -0.02em;
   padding-block: 2px;
-  background-image: linear-gradient(
-    96deg,
-    var(--mark-blue) 0%,
-    var(--mark-purple) 52%,
-    var(--mark-pink) 100%
-  );
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  -webkit-text-fill-color: transparent;
+  color: var(--ink);
 }
 
-@supports not ((background-clip: text) or (-webkit-background-clip: text)) {
+/* Wordmark-only exception: gradient lettering, exactly as the app ships it. The
+   `color` above is the fallback for engines without `background-clip: text`. */
+@supports ((background-clip: text) or (-webkit-background-clip: text)) {
   .wordmark {
-    background: none;
-    color: var(--mark-blue);
-    -webkit-text-fill-color: currentColor;
+    background-image: var(--grad-brand);
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: transparent;
   }
 }
 
@@ -325,48 +376,86 @@ button {
   letter-spacing: 0.01em;
 }
 
-/* ---- 02 · Bottom band -------------------------------------------- */
+/* ---- 02 · Floating dock ------------------------------------------ */
 
-/* DESIGN.md component spec, verbatim: an edge-docked full-width strip on
-   --base-2 with a 1px --line top border, no shadow, no outer radius. It is
-   chrome, not a floating object — so the height is the token --band-h and the
-   page clears it with derived padding. Three columns keep the composition
-   honest: the status readout sits left behind a hairline divider, the four
-   destinations stay optically centred, and the enrollment actions land flush
-   right. */
+/* The shipped .dock, ported: a 16px --glass surface with one --hairline border
+   and --shadow-float, capped at 720px and centred, inset 12px from the viewport
+   bottom and the side edges — never full-bleed. One row, never wrapping.
+
+   Width is negotiated instead of overflowing, exactly as in src/styles.css: the
+   status chip is the only shrinkable part, the nav is `flex: 0 0 auto` and takes
+   the leftover space as symmetric auto margins, and the actions hold their two
+   44px targets at the trailing edge. The chip ellipsises, so nothing slides
+   under it or past the rounded border. */
 .band {
   position: fixed;
   right: 0;
   bottom: 0;
   left: 0;
   z-index: 55;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  display: flex;
   align-items: center;
-  gap: 18px;
-  height: var(--band-h);
-  padding: 0 24px;
-  background: var(--base-2);
-  border-top: 1px solid var(--line);
+  gap: 12px;
+  flex-wrap: nowrap;
+  min-width: 0;
+  max-width: min(720px, calc(100% - 24px));
+  height: 56px;
+  margin: 0 auto 12px;
+  padding: 0 10px;
+  background: var(--glass);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-dialog);
+  box-shadow: var(--shadow-float);
+  /* The dock is its own size container: its 720px cap, not the viewport, decides
+     how much room the row really has. Without this the viewport media queries
+     never fire at 1440 while the dock's children still total ~980px. */
+  container-type: inline-size;
+  container-name: dock;
 }
 
 .band-start {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 10px;
+  /* Shrinks last-resort: the nav and the actions keep their 44px targets. */
+  flex: 0 1 auto;
   min-width: 0;
 }
 
-/* The readout is a sentence that shortens instead of truncating: lead and tail
-   spans are dropped at narrow widths, leaving "10 games". */
+/* Status chip: the only pill in the shell besides the dirty dot. It is a
+   --surface plate on the dock glass with one hairline, and the single element
+   allowed to shrink — `flex: 0 1 auto` plus ellipsised text means the readout
+   degrades to "10…" rather than pushing the nav off the dock. */
 .band-status {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 6px;
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  /* 1.3 line box plus symmetric block padding: the 14px line box at
+     `line-height: 1` is shorter than the glyphs, and the ellipsised span's
+     `overflow: hidden` sheared the 'g'/'p' descenders off ("games"). */
+  padding: 6px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
   color: var(--ink-2);
   font-size: var(--text-2xs);
   font-weight: 550;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The one text box that ellipsises: text-overflow needs a block container, so
+   the sentence lives in this span instead of directly in the flex row. Lead and
+   tail spans are dropped at narrow widths, leaving "10 games". */
+.band-status-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -388,38 +477,47 @@ button {
 .band-divider {
   flex: none;
   width: 1px;
-  height: 24px;
-  background: var(--line);
+  height: 20px;
+  background: var(--hairline);
 }
 
+/* Content-width island: `flex: 0 0 auto` keeps every 44px destination intact and
+   `margin-inline: auto` divides the leftover space evenly, collapsing to 0 rather
+   than overflowing when there is none. This is the shrink contract that used to
+   slide the first button under the status chip. */
 .band-nav {
   display: flex;
   align-items: center;
-  justify-self: center;
-  gap: 6px;
+  justify-content: center;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  gap: 4px;
+  min-width: 0;
+  margin-inline: auto;
 }
 
 .band-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  flex: 0 0 auto;
+  gap: 6px;
   min-width: 0;
 }
 
 /* One horizontal control per destination, 8px like every other control in this
-   language. State is the well, not a hue: rest is ink on the band, hover and the
-   current page are a --surface-2 well behind a --line border, and weight plus
-   aria-current carry the difference for anyone who cannot separate the two
-   backgrounds. */
+   language. State is the well, not a hue: rest is ink on the dock, hover is a
+   --surface lift, and the current page is the --surface-2 well with weight and
+   aria-current carrying the difference for anyone who cannot separate the
+   backgrounds. The glyph sits on the destination's own gradient badge. */
 .nav-item {
   display: inline-flex;
   flex: none;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 40px;
-  padding: 0 14px;
+  min-height: 44px;
+  padding: 0 10px;
   border: 1px solid transparent;
   border-radius: var(--radius-control);
   background: transparent;
@@ -433,20 +531,20 @@ button {
 }
 
 .nav-item:hover {
-  background: var(--surface-2);
-  border-color: var(--line);
+  background: var(--surface);
+  border-color: transparent;
   color: var(--ink);
 }
 
 .nav-item:active {
-  background: var(--line);
-  border-color: var(--line);
+  background: var(--surface-2);
+  border-color: transparent;
   color: var(--ink);
 }
 
 .nav-item[aria-current="page"] {
   background: var(--surface-2);
-  border-color: var(--line);
+  border-color: transparent;
   color: var(--ink);
   font-weight: 600;
 }
@@ -459,17 +557,54 @@ button {
 }
 
 .nav-item:focus-visible {
-  outline: 3px solid var(--focus-ring);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
+/* iiSU nav badge: a rounded-square gradient tile per destination with the glyph
+   knocked out in white — the same construction as `.nav-icon` in src/styles.css.
+   The hue is decorative (`aria-current` and the surface well carry the state),
+   and the dark scrim keeps the white glyph at >=4.5:1 on the palette's pastels. */
 .nav-icon {
-  display: block;
+  display: grid;
+  place-items: center;
   flex: none;
-  width: 22px;
-  height: 22px;
-  color: currentColor;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  background-image:
+    linear-gradient(160deg, rgba(7, 11, 18, 0.1), rgba(7, 11, 18, 0.38)),
+    linear-gradient(145deg, var(--nav-badge-1), var(--nav-badge-2));
+  box-shadow: var(--badge-inset), var(--badge-lift);
+  color: var(--ink-inverse);
   transition: transform var(--dur) var(--ease);
+}
+
+.nav-icon[data-view="library"] {
+  --nav-badge-1: var(--hue-library-1);
+  --nav-badge-2: var(--hue-library-2);
+}
+
+.nav-icon[data-view="snapshots"] {
+  --nav-badge-1: var(--hue-snapshots-1);
+  --nav-badge-2: var(--hue-snapshots-2);
+}
+
+.nav-icon[data-view="cloud"] {
+  --nav-badge-1: var(--hue-cloud-1);
+  --nav-badge-2: var(--hue-cloud-2);
+}
+
+.nav-icon[data-view="settings"] {
+  --nav-badge-1: var(--hue-settings-1);
+  --nav-badge-2: var(--hue-settings-2);
+}
+
+.nav-icon svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
 }
 
 .nav-item:hover .nav-icon {
@@ -496,23 +631,28 @@ button {
   margin-left: auto;
 }
 
+/* Neutral gradient badge, the same construction as the app's `.theme-toggle`:
+   --badge-neutral fill, white `currentColor` glyph, transparent 1px border and
+   a `filter` hover. The mockup keeps its 44px top-bar target size. */
 .theme-toggle {
   display: grid;
   place-items: center;
   width: 44px;
   height: 44px;
   padding: 0;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
-  background: var(--surface);
-  color: var(--ink-2);
-  box-shadow: var(--shadow-near);
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background-image:
+    linear-gradient(160deg, rgba(7, 11, 18, 0.1), rgba(7, 11, 18, 0.38)),
+    linear-gradient(145deg, var(--badge-neutral-1), var(--badge-neutral-2));
+  box-shadow: var(--badge-inset), var(--badge-lift);
+  color: var(--ink-inverse);
+  transition: filter var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
 }
 
 .theme-toggle:hover {
-  background: var(--surface-2);
-  color: var(--ink);
+  filter: brightness(1.14);
+  box-shadow: var(--badge-inset), var(--badge-lift), var(--shadow-near);
 }
 
 .theme-toggle svg {
@@ -572,21 +712,25 @@ button {
 /* Buttons                                                            */
 /* ------------------------------------------------------------------ */
 
+/* A default button is the shipped raised glass chip: opaque white, a
+   --line-strong boundary (>=3:1, so it stays perceivable), 8px control radius,
+   and the near shadow that lifts it off the glass beneath it. */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
   min-height: 42px;
-  padding: 0 22px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
+  padding: 0 20px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
   background: var(--surface);
   color: var(--ink);
   font-size: var(--text-sm);
   font-weight: 600;
   line-height: 1;
   white-space: nowrap;
+  box-shadow: var(--shadow-near);
   transition: background var(--dur-fast) var(--ease),
     border-color var(--dur-fast) var(--ease),
     box-shadow var(--dur) var(--ease),
@@ -601,36 +745,37 @@ button {
   transform: scale(0.985);
 }
 
+/* Semantic states replace the fill, never the geometry. The label is white on
+   --grad-primary, measured at 8.98:1 at the start stop and 6.32:1 at the end. */
 .btn-primary {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--accent-ink);
-  box-shadow: 0 8px 20px rgba(10, 109, 176, 0.24);
+  border-color: transparent;
+  background: var(--grad-primary);
+  color: var(--primary-ink);
 }
 
 .btn-primary:hover {
-  border-color: var(--accent-hover);
-  background: var(--accent-hover);
+  border-color: transparent;
+  background: var(--grad-primary);
+  filter: saturate(1.06) brightness(1.04);
 }
 
-/* Secondary: white fill with a hairline pastel gradient outline. The white
-   padding-box keeps the text on a flat surface so the outline stays decoration. */
+/* Secondary: the shipped ghost — the card's own glass fill under a hairline,
+   with no second shadow, so the pastel gradient outline is gone. */
 .btn-hairline {
-  border: 1px solid transparent;
-  background:
-    linear-gradient(var(--surface), var(--surface)) padding-box,
-    linear-gradient(122deg, #b9d4ff 0%, #d6c6ff 46%, #ffc9e3 100%) border-box;
+  border-color: var(--hairline);
+  background: var(--glass);
+  box-shadow: none;
 }
 
 .btn-hairline:hover {
-  background:
-    linear-gradient(#f7fafe, #f7fafe) padding-box,
-    linear-gradient(122deg, #a8c8fb 0%, #c9b4fb 46%, #ffb7da 100%) border-box;
+  border-color: var(--hairline);
+  background: var(--surface-2);
 }
 
 .btn-quiet {
   border-color: transparent;
   background: transparent;
+  box-shadow: none;
   color: var(--ink-2);
 }
 
@@ -676,7 +821,7 @@ button {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #c3d1e3;
+  background: var(--line);
   transition: background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
 
@@ -718,32 +863,27 @@ button {
   transform: translateY(-3px);
 }
 
-/* Cover rim. The colour identity now comes from the generated cover's own
-   palette: the script sets --cover-bg2 / --cover-accent on each tile from the
-   matching :root token pair, so the rim tracks the artwork instead of a
-   separate pastel hue. Decoration only: it wraps the squircle cover and nothing
-   else, so the label and meta sit on the page base, never inside the rim.
-   `position: relative` anchors the callout pill to the cover's own bottom edge
-   rather than to the label block. */
+/* The cover frame, as shipped: one --hairline boundary at the 12px panel radius
+   and no padding, so the generated artwork fills it edge to edge and carries its
+   own hairline frame inside. A tile's colour identity is the artwork itself,
+   never a second accent hue. `position: relative` anchors both the selection ring
+   and the callout pill to the cover's own edges.
+   No `overflow: hidden`: the callout deliberately straddles the bottom edge. */
 .tile-frame {
   position: relative;
   display: block;
   width: 100%;
-  padding: 3px;
-  border-radius: var(--cover-radius);
-  background: var(--cover-bg2, var(--surface-2));
-  box-shadow:
-    0 10px 26px rgba(47, 86, 140, 0.2),
-    0 2px 6px rgba(16, 23, 32, 0.05),
-    inset 0 1px 0 rgba(255, 255, 255, 0.85);
-  transition: box-shadow var(--dur) var(--ease), background var(--dur) var(--ease);
+  padding: 0;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-panel);
+  background: var(--surface-2);
+  transition: box-shadow var(--dur) var(--ease), border-color var(--dur-fast) var(--ease);
 }
 
+/* Hover lifts with the shared near shadow; no coloured halo. */
 .tile:hover .tile-frame {
-  box-shadow:
-    0 16px 34px rgba(47, 86, 140, 0.28),
-    0 3px 8px rgba(16, 23, 32, 0.06),
-    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-near);
 }
 
 /* The art surface: one generated 2:3 cover per game (see the inline script at
@@ -757,7 +897,8 @@ button {
   display: block;
   aspect-ratio: var(--cover-ar);
   overflow: hidden;
-  border-radius: var(--cover-radius-inner);
+  /* One step tighter than the 12px frame it sits inside, so the corners nest. */
+  border-radius: calc(var(--radius-panel) - 1px);
   background: var(--surface-2);
 }
 
@@ -771,30 +912,41 @@ button {
   height: 100%;
 }
 
-/* Selected: the cover's own accent becomes the rim, and a halo in the page's
-   accent colour lifts the tile off the base. The non-colour affordances stay:
-   the white check badge, the outline ring drawn on the cover, and the accent
-   rim's contrast step, so the state is never carried by colour alone. */
+/* Selected: the card edge steps to --line-strong and a 2px --grad-warm ring is
+   laid over it with the shipped mask-punch (`.tile[aria-current="true"]::after`
+   in src/styles.css). The two mask layers subtract the interior, so only the
+   stroke paints; the `-webkit-` pair is what WebKitGTK and WKWebView read. The
+   white check badge and the callout keep the state legible without colour. */
 .tile[aria-current="true"] .tile-frame {
-  background: var(--cover-accent, var(--accent));
-  box-shadow:
-    0 0 0 3px rgba(10, 109, 176, 0.32),
-    0 0 30px 8px rgba(10, 109, 176, 0.26),
-    0 20px 40px rgba(47, 86, 140, 0.3),
-    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  border-color: var(--line-strong);
 }
 
-/* The ring hugs the cover, not the whole label block, and follows its radius.
-   The preview shows the selected tile's ring statically; live, the same ring
-   appears on :focus-visible for every interactive element. */
+.tile[aria-current="true"] .tile-frame::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  padding: 2px;
+  border-radius: inherit;
+  background: var(--grad-warm);
+  -webkit-mask: linear-gradient(var(--ink) 0 0) content-box,
+    linear-gradient(var(--ink) 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(var(--ink) 0 0) content-box,
+    linear-gradient(var(--ink) 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* The neutral system focus ring is drawn outside the card, so it is never
+   confused with the selection ring inside it. */
 .tile:focus-visible {
   outline: 0;
 }
 
-.tile:focus-visible .tile-frame,
-.tile[aria-current="true"] .tile-frame {
-  outline: 3px solid var(--focus-ring);
-  outline-offset: 5px;
+.tile:focus-visible .tile-frame {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .tile-check {
@@ -806,16 +958,18 @@ button {
   place-items: center;
   width: 28px;
   height: 28px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--hairline);
   border-radius: 50%;
   background: var(--surface);
-  color: var(--accent);
+  color: var(--ink-2);
   box-shadow: var(--shadow-near);
   opacity: 0;
   transition: opacity var(--dur-fast) var(--ease);
 }
 
 .tile[aria-current="true"] .tile-check {
+  border-color: var(--line-strong);
+  color: var(--ink);
   opacity: 1;
 }
 
@@ -825,10 +979,11 @@ button {
   height: 15px;
 }
 
-/* The memorable moment from the references: a white pill straddling the selected
-   cover's bottom edge. It is a <span>, not a nested <button> — interactive
-   content inside a button is invalid HTML and would give the tile a second,
-   competing name — so, exactly like .tile-check above, it is a decorative
+/* The memorable moment from the references: a white plate straddling the selected
+   cover's bottom edge. Control radius, not a pill — the only pills in this system
+   are the status chip and the dirty dot. It is a <span>, not a nested <button> —
+   interactive content inside a button is invalid HTML and would give the tile a
+   second, competing name — so, exactly like .tile-check above, it is a decorative
    affordance inside the tile button. The live row reaches the same action from
    the detail panel and the status bar; this preview shows the shape only. */
 .tile-callout {
@@ -840,7 +995,7 @@ button {
   align-items: center;
   gap: 7px;
   padding: 7px 14px 7px 12px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-control);
   background: var(--surface);
   color: var(--ink);
   font-size: var(--text-2xs);
@@ -848,8 +1003,8 @@ button {
   line-height: 1;
   white-space: nowrap;
   box-shadow:
-    0 8px 18px rgba(16, 23, 32, 0.24),
-    0 1px 2px rgba(16, 23, 32, 0.12);
+    0 8px 18px rgba(16, 23, 32, 0.18),
+    0 1px 2px rgba(16, 23, 32, 0.1);
   transform: translate(-50%, 42%);
   pointer-events: none;
 }
@@ -865,16 +1020,18 @@ button {
   display: inline-flex;
 }
 
-/* Wii U home-menu structure: label and meta stack under the cover on the page
-   base, centred, with no card and no border around them. The top padding clears
-   the callout pill, which hangs 42% of its own height below the cover. */
+/* The Wii U home-menu structure, retuned to the shipped card: the cover frame
+   sits above a bare label with no plate, border, or radius, so the title reads
+   directly on the dot-grid field and stays close to the art. The small top
+   padding keeps the selected tile's callout plate from crowding the title. */
 .tile-label {
   display: grid;
   justify-items: center;
   gap: 4px;
   width: 100%;
   min-width: 0;
-  padding: 18px 2px 0;
+  margin-top: 10px;
+  padding: 4px 10px 12px;
 }
 
 .tile-title {
@@ -927,11 +1084,9 @@ button {
 /* The final tile is the "add" affordance: neutral dashed, no hue claim. It keeps
    the portrait box so the grid stays on one rhythm. */
 .tile-cell.is-enroll .tile-frame {
-  padding: 0;
-  border: 2px dashed #c3d1e3;
-  border-radius: var(--cover-radius);
-  background: rgba(255, 255, 255, 0.6);
-  box-shadow: none;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-panel);
+  background: var(--glass);
 }
 
 /* Re-centre the plus: the shared art rule is a plain cover slot, so the enroll
@@ -944,8 +1099,8 @@ button {
 }
 
 .tile-cell.is-enroll:hover .tile-frame {
-  border-color: #a8bad0;
-  box-shadow: 0 12px 26px rgba(47, 86, 140, 0.12);
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-near);
 }
 
 .enroll-plus {
@@ -954,40 +1109,20 @@ button {
 }
 
 /* ------------------------------------------------------------------ */
-/* 04 · Detail panel (glassy, gradient hairline)                      */
+/* 04 · Detail panel (glass, hairline, 16px)                          */
 /* ------------------------------------------------------------------ */
 
+/* The shipped card: one --glass fill on the dotted field, one --hairline
+   boundary, the 16px dialog-tier radius and the far shadow. No second gradient
+   border and no tinted interior wash — the field itself is the texture. */
 .glass-panel {
   position: relative;
-  border: 1px solid transparent;
-  border-radius: 30px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(245, 250, 255, 0.8)) padding-box,
-    linear-gradient(
-        126deg,
-        hsl(212 92% 82%) 0%,
-        hsl(266 82% 86%) 38%,
-        hsl(330 86% 88%) 70%,
-        hsl(174 72% 82%) 100%
-      )
-      border-box;
-  box-shadow:
-    0 26px 60px rgba(47, 86, 140, 0.14),
-    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  border: 1px solid var(--hairline);
+  border-radius: 16px;
+  background: var(--glass);
+  box-shadow: var(--shadow-far);
   backdrop-filter: blur(18px) saturate(1.12);
   -webkit-backdrop-filter: blur(18px) saturate(1.12);
-}
-
-/* Very light tinted interior wash, kept behind the content. */
-.glass-panel::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background:
-    radial-gradient(60% 90% at 4% 0%, rgba(206, 228, 255, 0.45) 0%, transparent 62%),
-    radial-gradient(55% 90% at 98% 100%, rgba(255, 214, 236, 0.4) 0%, transparent 66%);
-  pointer-events: none;
 }
 
 .detail {
@@ -1005,12 +1140,13 @@ button {
 /* Same key art as Hades' grid tile: the script reads the same title for both,
    so the panel can never show a different cover from the one the user selected.
    2:3 like the grid, one step wider (150px -> 225px tall) so the cover still
-   reads at panel scale. The rim takes the palette's bg2, matching .tile-frame. */
+   reads at panel scale. The rim is the same --surface-2 plate as .tile-frame,
+   at the shared panel radius. */
 .detail-cover {
   width: var(--detail-cover-w);
   padding: 3px;
-  border-radius: var(--cover-radius);
-  background: var(--cover-bg2, var(--surface-2));
+  border-radius: var(--radius-panel);
+  background: var(--surface-2);
   box-shadow: 0 14px 30px rgba(47, 86, 140, 0.24);
 }
 
@@ -1070,7 +1206,7 @@ button {
   min-height: 28px;
   padding: 0 12px;
   border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-control);
   background: var(--surface-2);
   color: var(--ink-2);
   font-size: var(--text-2xs);
@@ -1099,28 +1235,28 @@ button {
 /* 05 · Destructive restore dialog                                    */
 /* ------------------------------------------------------------------ */
 
+/* The scrim stage: one flat --scrim-strong field behind the dialog so the page
+   reads as blocked, and 16px panel radius — the radial washes are gone. */
 .dialog-stage {
   display: grid;
   place-items: center;
   padding: 52px 28px;
   border: 1px solid var(--line);
-  border-radius: 32px;
-  background:
-    radial-gradient(100% 120% at 10% 0%, #e7f1ff 0%, transparent 56%),
-    radial-gradient(100% 120% at 92% 100%, #ffe8f4 0%, transparent 60%),
-    var(--base-2);
+  border-radius: 16px;
+  background: var(--scrim-strong);
 }
 
+/* Top-layer glass: --glass-top keeps the title at 16.64:1 over the scrim, a
+   hairline boundary at the 16px dialog radius, and the float shadow. The
+   gradient border is gone. */
 .dialog-card {
   width: 100%;
   max-width: 486px;
   padding: 28px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-dialog);
-  background:
-    linear-gradient(var(--surface), var(--surface)) padding-box,
-    linear-gradient(124deg, #bfd8ff 0%, #dccbff 42%, #ffcde4 72%, #c8f1ec 100%) border-box;
-  box-shadow: var(--shadow-far);
+  border: 1px solid var(--hairline);
+  border-radius: 16px;
+  background: var(--glass-top);
+  box-shadow: var(--shadow-float);
 }
 
 .dialog-warn {
@@ -1190,12 +1326,12 @@ button {
 .empty-panel {
   max-width: 660px;
   padding: 40px 38px;
-  border: 1px solid transparent;
-  border-radius: 28px;
-  background:
-    linear-gradient(var(--surface), var(--surface)) padding-box,
-    linear-gradient(126deg, #c6dcff 0%, #dfd0ff 48%, #ffd4e8 100%) border-box;
+  border: 1px solid var(--hairline);
+  border-radius: 16px;
+  background: var(--glass);
   box-shadow: var(--shadow-far);
+  backdrop-filter: blur(18px) saturate(1.12);
+  -webkit-backdrop-filter: blur(18px) saturate(1.12);
 }
 
 .empty-icon {
@@ -1351,15 +1487,32 @@ button {
 
   /* Narrow band: labels are shed so the four destinations and two actions stay
      44px targets. The labels keep their accessible names — clipped to 1px, never
-     display: none — and the status readout keeps only the count. */
+     display: none — and the status readout keeps only the count. `overflow:
+     hidden` on the dock is the last-resort guard: nothing can slide out past the
+     rounded border at 390px, and it lives here rather than on .tile-frame, where
+     it would clip the callout. */
   .band {
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    gap: 8px;
+    overflow: hidden;
     padding: 0 8px;
+    gap: 8px;
   }
 
   .band-divider {
     display: none;
+  }
+
+  /* The chip becomes the flexible column: it takes the leftover width instead of
+     being pinned to 220px, and it is still the only thing that shrinks. */
+  .band-status {
+    flex: 1 1 auto;
+    max-width: none;
+  }
+
+  /* The nav keeps its auto width but stops dividing space symmetrically, so the
+     actions stay flush to the trailing edge. */
+  .band-nav {
+    gap: 4px;
+    margin-inline: auto 0;
   }
 
   .nav-label,
@@ -1372,10 +1525,6 @@ button {
     clip-path: inset(50%);
     white-space: nowrap;
     border: 0;
-  }
-
-  .band-nav {
-    gap: 4px;
   }
 
   .nav-item {
@@ -1394,6 +1543,48 @@ button {
   .band-actions .btn {
     min-width: 44px;
     padding: 0 10px;
+  }
+}
+
+/* Container queries on the dock, not the viewport: the row above is capped at
+   720px, so at a 1440 viewport the `max-width` media queries never shed the
+   sentence and the children still sum to ~980px — the chip collapsed to a 22px
+   sliver holding only the dot and the trailing button painted 32px past the
+   rounded border. Measuring the dock's own inline size fixes both cases.
+
+   No new colours, no new patterns: this is the same 1200px/1040px/720px
+   degradation ladder, re-anchored to the element that actually runs out of
+   room. */
+@container dock (max-width: 900px) {
+  .band-lead,
+  .band-tail {
+    display: none;
+  }
+
+  /* The accessible name survives: clipped to 1px, never `display: none`. */
+  .band-action-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .band-actions .btn {
+    min-width: 44px;
+    padding: 0 13px;
+  }
+}
+
+/* At 390 the dock is ~366px: two 44px actions plus four 44px destinations leave
+   the status chip too little to render "10 games", so the actions step aside and
+   the dock is status + nav only, matching the shipped compact dock. */
+@container dock (max-width: 560px) {
+  .band-actions {
+    display: none;
   }
 }
 
@@ -1730,73 +1921,79 @@ button {
 </main>
 
 <!-- ================================================================ -->
-<!-- 02 · Bottom band — the edge-docked strip that carries the four    -->
+<!-- 02 · Bottom band — the floating glass dock that carries the four  -->
 <!-- primary destinations, the local status readout, and the two       -->
-<!-- enrollment-side actions. Fixed and full-bleed: no shadow, no      -->
-<!-- radius, hairline top border only; body padding clears it.         -->
+<!-- enrollment-side actions. Fixed, centred, capped at 720px and      -->
+<!-- inset 12px from the viewport bottom, so it never docks flush to   -->
+<!-- an edge; body padding clears it.                                  -->
 <!-- ================================================================ -->
 <footer class="band" role="contentinfo">
   <div class="band-start">
     <p class="band-status">
       <span class="status-dot" aria-hidden="true"></span>
-      <span class="band-lead">Local backup ready</span>
-      <span class="band-count"><strong>10</strong> games</span>
-      <span class="band-tail">· <strong>3</strong> with uncaptured changes</span>
+      <span class="band-status-text"><span class="band-lead">Local backup ready</span>
+        <span class="band-count"><strong>10</strong> games</span>
+        <span class="band-tail">· <strong>3</strong> with uncaptured changes</span></span>
     </p>
     <span class="band-divider" aria-hidden="true"></span>
   </div>
 
   <nav class="band-nav" aria-label="Primary">
+    <!-- Filled glyphs, ported from NavGlyph in src/App.tsx: each glyph is a flat
+         `currentColor` fill inside `<span class="nav-icon" data-view="…">`, and
+         the badge behind it supplies the destination's gradient in CSS. The hue
+         never carries meaning alone (the --surface-2 well and aria-current do). -->
     <button class="nav-item" type="button" aria-current="page">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
-        <rect x="3.2" y="3.2" width="7.4" height="7.4" rx="2.2"></rect>
-        <rect x="13.4" y="3.2" width="7.4" height="7.4" rx="2.2"></rect>
-        <rect x="3.2" y="13.4" width="7.4" height="7.4" rx="2.2"></rect>
-        <rect x="13.4" y="13.4" width="7.4" height="7.4" rx="2.2"></rect>
-      </svg>
+      <span class="nav-icon" data-view="library" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <rect x="3" y="3" width="8" height="8" rx="2.2" fill="currentColor"></rect>
+          <rect x="13" y="3" width="8" height="8" rx="2.2" fill="currentColor"></rect>
+          <rect x="3" y="13" width="8" height="8" rx="2.2" fill="currentColor"></rect>
+          <rect x="13" y="13" width="8" height="8" rx="2.2" fill="currentColor"></rect>
+        </svg>
+      </span>
       <span class="nav-label">Library</span>
     </button>
 
     <button class="nav-item" type="button">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
-        <path d="M3.6 12a8.4 8.4 0 1 0 2.6-6"></path>
-        <path d="M3.1 4.4v4.8h4.8"></path>
-        <path d="M12 8.1v4.3l2.9 1.7"></path>
-      </svg>
+      <span class="nav-icon" data-view="snapshots" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M12 2.6a9.4 9.4 0 1 0 0 18.8 9.4 9.4 0 0 0 0-18.8Zm-.85 4.3h1.7v5.2l3.5 2.05-.85 1.45-4.35-2.55Z"></path>
+        </svg>
+      </span>
       <span class="nav-label">Snapshots</span>
     </button>
 
     <button class="nav-item" type="button">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
-        <path d="M20.4 11.6a8.4 8.4 0 0 0-14.9-4.9"></path>
-        <path d="M4.6 4.1v4.6h4.6"></path>
-        <path d="M3.6 12.4a8.4 8.4 0 0 0 14.9 4.9"></path>
-        <path d="M19.4 19.9v-4.6h-4.6"></path>
-      </svg>
+      <span class="nav-icon" data-view="cloud" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path fill="currentColor" d="M7.2 18.4h9.6a3.9 3.9 0 0 0 .5-7.8 5.6 5.6 0 0 0-10.8-1.2 4.5 4.5 0 0 0 .7 9Z"></path>
+        </svg>
+      </span>
       <span class="nav-label">Sync</span>
     </button>
 
     <button class="nav-item" type="button">
-      <!-- Settings: a real cog — 8 chunky flat-topped teeth on a r6.6 rim, with a
-           round hole through the middle. Deliberately not the radial-spoke sun,
-           which read as a second theme toggle. -->
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
-        <path d="M21.31 13.31 21.31 10.69 18.34 10.18 17.77 8.8 19.51 6.34 17.66 4.49 15.2 6.23 13.82 5.66 13.31 2.69 10.69 2.69 10.18 5.66 8.8 6.23 6.34 4.49 4.49 6.34 6.23 8.8 5.66 10.18 2.69 10.69 2.69 13.31 5.66 13.82 6.23 15.2 4.49 17.66 6.34 19.51 8.8 17.77 10.18 18.34 10.69 21.31 13.31 21.31 13.82 18.34 15.2 17.77 17.66 19.51 19.51 17.66 17.77 15.2 18.34 13.82 Z"></path>
-        <circle cx="12" cy="12" r="3.1"></circle>
-      </svg>
+      <!-- Settings: a filled cog — evenodd punches the 3.6 rim hole out of the
+           toothed disc, so it stays one flat fill and never a spoke sun. -->
+      <span class="nav-icon" data-view="settings" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94L14.4 2.81c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41L9.25 5.35c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58ZM12 15.6a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2Z"></path>
+        </svg>
+      </span>
       <span class="nav-label">Settings</span>
     </button>
   </nav>
 
   <div class="band-actions">
-    <button class="btn btn-hairline btn-small" type="button">
+    <button class="btn btn-hairline btn-small" type="button" title="Scan for games">
       <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
         <circle cx="10.6" cy="10.6" r="6.4"></circle>
         <path d="M15.4 15.4 20.4 20.4"></path>
       </svg>
       <span class="band-action-label">Scan for games</span>
     </button>
-    <button class="btn btn-primary btn-small" type="button">
+    <button class="btn btn-primary btn-small" type="button" title="Enroll selected">
       <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
         <path d="M12 5.2v13.6"></path>
         <path d="M5.2 12h13.6"></path>
@@ -1811,10 +2008,11 @@ button {
      within that field and a crest motif, and the title supplies the monogram, so
      every cover is deterministic and there is no network request and no image.
      The palette hex lives only in the :root tokens above; this script resolves
-     them with getComputedStyle and also mirrors the chosen palette onto
-     --cover-bg2 / --cover-accent so the tile rim and the detail rim track their
-     own artwork. Presentational only: every SVG is aria-hidden, so the tile
-     button keeps its accessible name. -->
+     them with getComputedStyle. Each cover paints the shipped three layers — a
+     vertical bg→bg2 wash, a diagonal sheen under the crest, and the double
+     hairline frame — with per-instance gradient ids so repeated titles cannot
+     collide. Presentational only: every SVG is aria-hidden, so the tile button
+     keeps its accessible name. -->
 <script>
 (function () {
   "use strict";
@@ -1968,34 +2166,53 @@ button {
     return parts.join("");
   }
 
+  /* Per-instance gradient ids. The same title can be on screen twice (Hades in
+     the grid and again in the detail panel) and SVG ids are document-global, so a
+     shared id would make the second cover resolve the first one's gradient. The
+     counter suffix is the mockup's stand-in for useId() in CoverArt.tsx. */
+  var instanceCounter = 0;
+
   /* 600x900 = the 2:3 portrait the artwork pipeline requests. `slice` lets the
      same artwork fill any slot shape without letterboxing. */
   function coverMarkup(title) {
     var spec = coverFor(title);
     var palette = spec.palette;
     var glyphSize = Array.from(spec.monogram).length > 1 ? 216 : 268;
+    var instanceId = (instanceCounter += 1);
+    var washId = "cover-wash-" + instanceId;
+    var glossId = "cover-gloss-" + instanceId;
+    /* Sheen tone, taken from the palette itself: ink on a light field (a faint
+       grey gloss), bg on a dark field (a faint shadowed top edge). */
+    var sheen = spec.field === "light" ? palette.ink : palette.bg;
     return {
-      palette: palette,
       markup:
         '<svg viewBox="0 0 600 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false">' +
-        '<rect width="600" height="900" fill="' + palette.bg + '"/>' +
+        "<defs>" +
+        '<linearGradient id="' + washId + '" x1="0" y1="0" x2="0" y2="1">' +
+        '<stop offset="0" stop-color="' + palette.bg + '"/>' +
+        '<stop offset="0.5" stop-color="' + palette.bg + '"/>' +
+        '<stop offset="1" stop-color="' + palette.bg2 + '"/>' +
+        "</linearGradient>" +
+        '<linearGradient id="' + glossId + '" x1="0" y1="0" x2="0.55" y2="1">' +
+        '<stop offset="0" stop-color="' + sheen + '" stop-opacity="0.16"/>' +
+        '<stop offset="0.42" stop-color="' + sheen + '" stop-opacity="0"/>' +
+        "</linearGradient>" +
+        "</defs>" +
+        '<rect width="600" height="900" fill="url(#' + washId + ')"/>' +
         '<rect x="-170" y="-210" width="580" height="560" rx="150" fill="' + palette.bg2 + '"/>' +
         '<rect x="330" y="600" width="380" height="380" rx="140" fill="' + palette.bg2 + '" opacity="0.55"/>' +
+        '<rect width="600" height="520" fill="url(#' + glossId + ')"/>' +
         '<g fill="none" stroke="' + palette.accent + '" stroke-width="2.5">' + motifMarkup(spec.motif) + "</g>" +
         '<text x="' + CREST_X + '" y="' + CREST_Y + '" text-anchor="middle" dominant-baseline="central" fill="' + palette.ink + '" font-family="\'Fredoka\', \'Segoe UI Variable Display\', \'Segoe UI\', system-ui, sans-serif" font-size="' + glyphSize + '" font-weight="600" letter-spacing="-8">' + escapeText(spec.monogram) + "</text>" +
+        '<rect x="12" y="12" width="576" height="876" rx="42" fill="none" stroke="' + palette.ink + '" stroke-opacity="0.07" stroke-width="1.5"/>' +
         '<rect x="28" y="28" width="544" height="844" rx="26" fill="none" stroke="' + palette.ink + '" stroke-opacity="0.14" stroke-width="1.5"/>' +
         "</svg>"
     };
   }
 
-  function paint(art, title, host) {
+  function paint(art, title) {
     if (!art || !title) return;
-    var cover = coverMarkup(title);
-    art.innerHTML = cover.markup;
-    if (host) {
-      host.style.setProperty("--cover-bg2", cover.palette.bg2);
-      host.style.setProperty("--cover-accent", cover.palette.accent);
-    }
+    art.innerHTML = coverMarkup(title).markup;
   }
 
   function textOf(root, selector) {
@@ -2006,14 +2223,14 @@ button {
   Array.prototype.forEach.call(
     document.querySelectorAll(".tile-cell:not(.is-enroll)"),
     function (cell) {
-      paint(cell.querySelector(".tile-art"), textOf(cell, ".tile-title"), cell.querySelector(".tile"));
+      paint(cell.querySelector(".tile-art"), textOf(cell, ".tile-title"));
     }
   );
 
   Array.prototype.forEach.call(
     document.querySelectorAll(".detail-cover"),
     function (cover) {
-      paint(cover.querySelector(".detail-art"), textOf(document, ".detail-title"), cover);
+      paint(cover.querySelector(".detail-art"), textOf(document, ".detail-title"));
     }
   );
 })();

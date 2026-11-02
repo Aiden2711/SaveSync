@@ -277,11 +277,22 @@ describe("library tile grid", () => {
     expect(tileDeclarations()).not.toMatch(/\b(rgb|rgba|hsl|hsla)\(/);
   });
 
-  it("uses a neutral outline, never the accent, for the selected tile", () => {
+  it("rings the selected tile with the gradient, never the accent", () => {
     const selected = declarationsFor('.tile[aria-current="true"]');
 
     expect(selected).toContain("border-color: var(--line-strong)");
-    expect(selected).toContain("outline: 2px solid var(--focus-ring)");
+    // The keyboard ring moved to its own rule; selection is a gradient ring on
+    // a masked pseudo-element, so the two states never read as the same thing.
+    expect(declarationsFor(".tile:focus-visible")).toContain(
+      "outline: 2px solid var(--focus-ring)",
+    );
+
+    const ring = declarationsFor('.tile[aria-current="true"]::after');
+    expect(ring).toContain("background: var(--grad-warm)");
+    expect(ring).toContain("pointer-events: none");
+
+    // The glow is the library hue, not the accent fill.
+    expect(selected.join("; ")).toContain("var(--hue-library-1)");
     // The browser resolves the token; it must land on a neutral, not the blue.
     expect(resolveTokens("border-color: var(--line-strong)")).toBe(
       `border-color: ${tokenValue("--line-strong")}`,

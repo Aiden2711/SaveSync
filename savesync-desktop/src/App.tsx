@@ -12,6 +12,8 @@ import type {
   Game,
   GoogleStatus,
   GridCandidate,
+  ProviderKind,
+  ProviderStatus,
   Revision,
   SyncReport,
 } from "./types";
@@ -175,56 +177,75 @@ function Modal({
 }
 
 /**
- * Shared attributes for the 18px line icons in the top navigation. The CSS
- * `.nav-icon` box is `display: grid; place-items: center`, so the glyph is
- * centred on the label's cap height rather than riding high in the button.
+ * Shared attributes for the filled nav glyphs. Each glyph paints in
+ * `currentColor` — white, taken from the gradient badge `.nav-icon` draws
+ * behind it — so the SVG carries no hue of its own. The badge's
+ * `display: grid; place-items: center` centres the 18px box.
  */
 const NAV_SVG_PROPS = {
   viewBox: "0 0 24 24",
-  fill: "none",
-  stroke: "currentColor",
-  strokeWidth: 1.8,
-  strokeLinecap: "round",
-  strokeLinejoin: "round",
   "aria-hidden": true,
   focusable: "false",
 } as const;
 
-/** Purely decorative glyph for a nav destination; the label carries the name. */
+/**
+ * Purely decorative filled glyph for a nav destination; the label carries the
+ * name. Every shape is a flat `currentColor` fill, so the glyph takes the white
+ * ink of the gradient badge `.nav-icon` draws behind it. The destination hue
+ * lives in CSS (`[data-view]` on the badge), which keeps the theme tokens as
+ * the single source of colour and lets one glyph set serve both themes.
+ */
 function NavGlyph({ view }: { view: View }) {
   return (
-    <svg {...NAV_SVG_PROPS}>
+    <svg {...NAV_SVG_PROPS} fill="currentColor">
       {view === "library" && (
         <>
-          <rect x="3.5" y="3.5" width="7" height="7" />
-          <rect x="13.5" y="3.5" width="7" height="7" />
-          <rect x="3.5" y="13.5" width="7" height="7" />
-          <rect x="13.5" y="13.5" width="7" height="7" />
+          <rect x="3" y="3" width="8" height="8" rx="2.2" fill="currentColor" />
+          <rect x="13" y="3" width="8" height="8" rx="2.2" fill="currentColor" />
+          <rect x="3" y="13" width="8" height="8" rx="2.2" fill="currentColor" />
+          <rect x="13" y="13" width="8" height="8" rx="2.2" fill="currentColor" />
         </>
       )}
       {view === "snapshots" && (
-        <>
-          <path d="M3.4 12a8.6 8.6 0 1 0 2.6-6.1" />
-          <path d="M3 4.2v5h5" />
-          <path d="M12 8.2v4.2l2.8 1.6" />
-        </>
+        <path
+          fill="currentColor"
+          fillRule="evenodd"
+          clipRule="evenodd"
+          d="M12 2.6a9.4 9.4 0 1 0 0 18.8 9.4 9.4 0 0 0 0-18.8Zm-.85 4.3h1.7v5.2l3.5 2.05-.85 1.45-4.35-2.55Z"
+        />
       )}
       {view === "conflicts" && (
         <>
-          <circle cx="6" cy="6" r="2.2" />
-          <circle cx="6" cy="18" r="2.2" />
-          <circle cx="18" cy="12" r="2.2" />
-          <path d="M6 8.2v7.6M8.2 6h4a3.4 3.4 0 0 1 3.4 3.4" />
+          <path
+            fill="currentColor"
+            d="M7.6 3h8.8v5.6a4.4 4.4 0 0 1-8.8 0Z"
+          />
+          <path
+            fill="currentColor"
+            d="M5.6 4.4h2.4v1.7H5.6a1.55 1.55 0 0 0 0 3.1h1.2v1.7H5.6a3.25 3.25 0 0 1 0-6.5Z"
+          />
+          <path
+            fill="currentColor"
+            d="M18.4 4.4h-2.4v1.7h2.4a1.55 1.55 0 0 1 0 3.1h-1.2v1.7h1.2a3.25 3.25 0 0 0 0-6.5Z"
+          />
+          <path fill="currentColor" d="M10.3 11.9h3.4v3.1h-3.4z" />
+          <rect x="7.5" y="14.8" width="9" height="1.7" rx="0.85" fill="currentColor" />
+          <rect x="9.3" y="18" width="5.4" height="1.8" rx="0.9" fill="currentColor" />
         </>
       )}
       {view === "cloud" && (
-        <path d="M7.2 18.5h9.6a3.9 3.9 0 0 0 .5-7.8 5.6 5.6 0 0 0-10.8-1.2 4.5 4.5 0 0 0 .7 9Z" />
+        <path
+          fill="currentColor"
+          d="M7.2 18.4h9.6a3.9 3.9 0 0 0 .5-7.8 5.6 5.6 0 0 0-10.8-1.2 4.5 4.5 0 0 0 .7 9Z"
+        />
       )}
       {view === "settings" && (
-        <>
-          <circle cx="12" cy="12" r="3.2" />
-          <path d="M12 2.8v2.4M12 18.8v2.4M4.5 4.5l1.7 1.7M17.8 17.8l1.7 1.7M2.8 12h2.4M18.8 12h2.4M4.5 19.5l1.7-1.7M17.8 6.2l1.7-1.7" />
-        </>
+        <path
+          fill="currentColor"
+          fillRule="evenodd"
+          clipRule="evenodd"
+          d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94L14.4 2.81c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41L9.25 5.35c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58ZM12 15.6a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2Z"
+        />
       )}
     </svg>
   );
@@ -251,6 +272,35 @@ export default function App() {
     pending: false,
     error: null,
   });
+  /**
+   * Active remote provider. Google stays the default so the pre-existing Drive
+   * flow is unchanged for anyone who never opens the provider picker.
+   */
+  const [provider, setProvider] = useState<ProviderKind>("google");
+  const [dropbox, setDropbox] = useState<ProviderStatus>({
+    kind: "dropbox",
+    identifier: null,
+    configured: false,
+    connected: false,
+    pending: false,
+    error: null,
+  });
+  const [webdav, setWebdav] = useState<ProviderStatus>({
+    kind: "webdav",
+    identifier: null,
+    configured: false,
+    connected: false,
+    pending: false,
+    error: null,
+  });
+  const [dropboxAppKeyDraft, setDropboxAppKeyDraft] = useState("");
+  const [webdavEndpointDraft, setWebdavEndpointDraft] = useState("");
+  const [webdavUsernameDraft, setWebdavUsernameDraft] = useState("");
+  /**
+   * The WebDAV password is read off the DOM at submit time and never copied
+   * into React state, so it cannot end up in a render, an error, or a log.
+   */
+  const webdavPasswordRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -388,6 +438,22 @@ export default function App() {
     [games, selectedId],
   );
 
+  /** Display name of the active provider, used verbatim in labels and titles. */
+  const providerHeading =
+    provider === "google" ? "Google Drive" : provider === "dropbox" ? "Dropbox" : "WebDAV";
+  /**
+   * Whether sync can run. Local snapshots and restores never consult this:
+   * cloud sync is optional and manual.
+   */
+  const activeConnected =
+    provider === "google"
+      ? drive.connected
+      : provider === "dropbox"
+        ? dropbox.connected
+        : webdav.connected;
+  const connectHint = `Connect ${providerHeading} first`;
+  const syncLabel = `Syncing with ${providerHeading}`;
+
   const run = useCallback(
     async <T,>(label: string, action: () => Promise<T>): Promise<T | null> => {
       setBusy(label);
@@ -477,13 +543,24 @@ export default function App() {
     }
     void (async () => {
       try {
-        const [nextStatus, nextDrive] = await Promise.all([
-          api.status(),
-          api.googleStatus(),
-        ]);
+        const [nextStatus, nextDrive, nextProvider, nextDropbox, nextWebdav] =
+          await Promise.all([
+            api.status(),
+            api.googleStatus(),
+            api.activeProvider(),
+            api.dropboxStatus(),
+            api.webdavStatus(),
+          ]);
         setStatus(nextStatus);
         setDrive(nextDrive);
         setClientIdDraft(nextDrive.client_id ?? "");
+        // The persisted provider choice is authoritative: `sync_game` on the
+        // Rust side dispatches on the same value.
+        setProvider(nextProvider);
+        setDropbox(nextDropbox);
+        setDropboxAppKeyDraft(nextDropbox.identifier ?? "");
+        setWebdav(nextWebdav);
+        setWebdavEndpointDraft(nextWebdav.identifier ?? "");
         await loadGames();
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause));
@@ -515,6 +592,22 @@ export default function App() {
     }, 1200);
     return () => window.clearInterval(timer);
   }, [drive.pending]);
+
+  useEffect(() => {
+    if (!dropbox.pending) return;
+    const timer = window.setInterval(() => {
+      void api
+        .dropboxStatus()
+        .then((next) => {
+          setDropbox(next);
+          if (next.connected && !next.pending) {
+            setNotice("Dropbox connected.");
+          }
+        })
+        .catch((cause) => setError(String(cause)));
+    }, 1200);
+    return () => window.clearInterval(timer);
+  }, [dropbox.pending]);
 
   useEffect(() => {
     function handleDocumentClick() {
@@ -632,7 +725,7 @@ export default function App() {
   }
 
   async function syncGame(gameId: string) {
-    const report: SyncReport | null = await run("Syncing with Google Drive", () =>
+    const report: SyncReport | null = await run(syncLabel, () =>
       api.sync(gameId),
     );
     if (report) {
@@ -916,9 +1009,100 @@ export default function App() {
     void requestDisconnect();
   }
 
+  /**
+   * Switch the provider both in the UI and in Rust.
+   *
+   * The UI follows the persisted value rather than optimistically diverging:
+   * `sync_game` dispatches on the Rust-side choice, so a failed switch must not
+   * leave the panel claiming a provider that sync will not use.
+   */
+  async function chooseProvider(kind: ProviderKind) {
+    if (kind === provider) return;
+    const next = await run("Saving cloud provider", () =>
+      api.setActiveProvider(kind),
+    );
+    if (next) setProvider(next.kind);
+  }
+
+  async function saveDropboxAppKey(event: FormEvent) {
+    event.preventDefault();
+    const next = await run("Saving Dropbox app key", () =>
+      api.setDropboxAppKey(dropboxAppKeyDraft),
+    );
+    if (next) {
+      setDropbox(next);
+      setNotice("Dropbox app key saved.");
+    }
+  }
+
+  async function connectDropbox() {
+    const started = await run("Starting Dropbox sign-in", () =>
+      api.beginDropboxOAuth(),
+    );
+    if (started) {
+      setNotice(
+        "A browser window was opened. Finish Dropbox sign-in there; SaveSync will update automatically.",
+      );
+      try {
+        setDropbox(await api.dropboxStatus());
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
+    }
+  }
+
+  async function disconnectDropboxProvider() {
+    const next = await run("Disconnecting Dropbox", () =>
+      api.disconnectDropbox(),
+    );
+    if (next) {
+      setDropbox(next);
+      setNotice("Dropbox disconnected.");
+    }
+  }
+
+  /**
+   * Persist the WebDAV endpoint and username, and hand the password straight to
+   * the command. The password is read from the DOM and never stored in React
+   * state, so it cannot be rendered, logged, or carried into a notice.
+   */
+  async function saveWebdavConfig(event: FormEvent) {
+    event.preventDefault();
+    const endpoint = webdavEndpointDraft.trim();
+    if (!endpoint) {
+      setError("Enter the WebDAV endpoint.");
+      return;
+    }
+    const password = webdavPasswordRef.current?.value ?? "";
+    const next = await run("Saving WebDAV settings", () =>
+      api.setWebdavConfig(endpoint, webdavUsernameDraft.trim(), password),
+    );
+    if (next) {
+      setWebdav(next);
+      setWebdavEndpointDraft(next.identifier ?? endpoint);
+      // Drop the secret from the DOM as soon as the command has accepted it.
+      if (webdavPasswordRef.current) webdavPasswordRef.current.value = "";
+      setNotice(
+        next.connected
+          ? "WebDAV connected. The password is stored in the OS keyring."
+          : "WebDAV settings saved.",
+      );
+    }
+  }
+
+  async function disconnectWebdavProvider() {
+    const next = await run("Disconnecting WebDAV", () =>
+      api.disconnectWebdav(),
+    );
+    if (next) {
+      setWebdav(next);
+      setNotice("WebDAV disconnected.");
+    }
+  }
+
   async function syncSelected() {
     if (!selectedGame) return;
-    const report: SyncReport | null = await run("Syncing with Google Drive", () =>
+    const report: SyncReport | null = await run(syncLabel, () =>
       api.sync(selectedGame.id),
     );
     if (report) {
@@ -1207,14 +1391,14 @@ export default function App() {
             <button
               className="ghost"
               onClick={() => void syncSelected()}
-              disabled={!!busy || !drive.connected}
+              disabled={!!busy || !activeConnected}
               title={
-                drive.connected
-                  ? "Sync revisions with Google Drive"
-                  : "Connect Google Drive first"
+                activeConnected
+                  ? `Sync revisions with ${providerHeading}`
+                  : connectHint
               }
             >
-              {busy === "Syncing with Google Drive" ? "Syncing…" : "Sync now"}
+              {busy === syncLabel ? "Syncing…" : "Sync now"}
             </button>
           </div>
         </header>
@@ -1370,6 +1554,18 @@ export default function App() {
   }
 
   function renderCloudView() {
+    const activePending =
+      provider === "google"
+        ? drive.pending
+        : provider === "dropbox"
+          ? dropbox.pending
+          : false;
+    const providerError =
+      provider === "google"
+        ? drive.error
+        : provider === "dropbox"
+          ? dropbox.error
+          : webdav.error;
     return (
       <section className="view" aria-labelledby="cloud-title">
         <header className="view-header">
@@ -1383,68 +1579,217 @@ export default function App() {
 
         <section className="panel drive-panel" aria-labelledby="drive-panel-title">
           <div className="panel-title">
-            <h2 id="drive-panel-title">Google Drive</h2>
-            <span className={drive.connected ? "status on" : "status"}>
-              {drive.connected
+            <h2 id="drive-panel-title">{providerHeading}</h2>
+            <span className={activeConnected ? "status on" : "status"}>
+              {activeConnected
                 ? "Connected"
-                : drive.pending
+                : activePending
                   ? "Waiting for sign-in"
                   : "Not connected"}
             </span>
           </div>
-          <p className="muted small">
-            {drive.connected
-              ? "Connected. Sync is manual and never overwrites saves."
-              : drive.pending
-                ? "Waiting for the browser sign-in…"
-                : "Optional. Requests only the drive.file scope."}
-          </p>
 
-          <form className="stack" onSubmit={saveClientId}>
-            <label>
-              OAuth client id
-              <input
-                value={clientIdDraft}
-                onChange={(event) => setClientIdDraft(event.target.value)}
-                placeholder="…apps.googleusercontent.com"
-                spellCheck={false}
-              />
-            </label>
-            <button type="submit" disabled={!!busy}>
-              Save client id
+          <div className="seg" role="group" aria-label="Cloud provider">
+            <button
+              type="button"
+              aria-pressed={provider === "google"}
+              onClick={() => void chooseProvider("google")}
+              disabled={!!busy}
+            >
+              Google Drive
             </button>
-          </form>
+            <button
+              type="button"
+              aria-pressed={provider === "dropbox"}
+              onClick={() => void chooseProvider("dropbox")}
+              disabled={!!busy}
+            >
+              Dropbox
+            </button>
+            <button
+              type="button"
+              aria-pressed={provider === "webdav"}
+              onClick={() => void chooseProvider("webdav")}
+              disabled={!!busy}
+            >
+              WebDAV
+            </button>
+          </div>
+
+          {provider === "google" && (
+            <>
+              <p className="muted small">
+                {drive.connected
+                  ? "Connected. Sync is manual and never overwrites saves."
+                  : drive.pending
+                    ? "Waiting for the browser sign-in…"
+                    : "Optional. Requests only the drive.file scope."}
+              </p>
+
+              <form className="stack" onSubmit={saveClientId}>
+                <label>
+                  OAuth client id
+                  <input
+                    value={clientIdDraft}
+                    onChange={(event) => setClientIdDraft(event.target.value)}
+                    placeholder="…apps.googleusercontent.com"
+                    spellCheck={false}
+                  />
+                </label>
+                <button type="submit" disabled={!!busy}>
+                  Save client id
+                </button>
+              </form>
+            </>
+          )}
+
+          {provider === "dropbox" && (
+            <>
+              <p className="muted small">
+                {dropbox.connected
+                  ? "Connected. Sync is manual and never overwrites saves."
+                  : dropbox.pending
+                    ? "Waiting for the browser sign-in…"
+                    : "Optional. Uses app-folder access and a PKCE app key."}
+              </p>
+
+              <form className="stack" onSubmit={saveDropboxAppKey}>
+                <label>
+                  App key
+                  <input
+                    value={dropboxAppKeyDraft}
+                    onChange={(event) => setDropboxAppKeyDraft(event.target.value)}
+                    placeholder="Dropbox app key"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </label>
+                <button type="submit" disabled={!!busy}>
+                  Save app key
+                </button>
+              </form>
+            </>
+          )}
+
+          {provider === "webdav" && (
+            <>
+              <p className="muted small">
+                {webdav.connected
+                  ? "Connected. Sync is manual and never overwrites saves."
+                  : "Optional. Any HTTPS WebDAV server with Basic authentication."}
+              </p>
+
+              <form className="stack" onSubmit={saveWebdavConfig}>
+                <label>
+                  Endpoint
+                  <input
+                    value={webdavEndpointDraft}
+                    onChange={(event) => setWebdavEndpointDraft(event.target.value)}
+                    placeholder="https://dav.example.com/savesync"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </label>
+                <label>
+                  Username
+                  <input
+                    value={webdavUsernameDraft}
+                    onChange={(event) => setWebdavUsernameDraft(event.target.value)}
+                    placeholder={
+                      webdav.configured ? "Stored username" : "WebDAV username"
+                    }
+                    autoComplete="username"
+                    spellCheck={false}
+                  />
+                </label>
+                <label>
+                  Password
+                  {/*
+                    Uncontrolled on purpose: the secret is read from the DOM at
+                    submit time and never enters React state, so it cannot be
+                    rendered, logged, or shown in an error.
+                  */}
+                  <input
+                    ref={webdavPasswordRef}
+                    type="password"
+                    defaultValue=""
+                    placeholder={
+                      webdav.connected ? "Stored in the OS keyring" : "WebDAV password"
+                    }
+                    autoComplete="current-password"
+                    spellCheck={false}
+                  />
+                </label>
+                <p className="muted small">
+                  The password is kept in the OS keyring and never written to the
+                  SaveSync database or to logs. Leaving the username or password
+                  blank keeps the stored value.
+                </p>
+                <button type="submit" disabled={!!busy}>
+                  Save and connect
+                </button>
+              </form>
+            </>
+          )}
 
           <div className="row">
-            {drive.connected ? (
+            {provider === "google" &&
+              (drive.connected ? (
+                <button
+                  className="ghost"
+                  onClick={() => void disconnectDrive()}
+                  disabled={!!busy}
+                >
+                  Disconnect
+                </button>
+              ) : (
+                <button
+                  className="primary"
+                  onClick={() => void connectDrive()}
+                  disabled={!!busy || drive.pending || !drive.client_id}
+                >
+                  {drive.pending ? "Waiting…" : "Connect Drive"}
+                </button>
+              ))}
+            {provider === "dropbox" &&
+              (dropbox.connected ? (
+                <button
+                  className="ghost"
+                  onClick={() => void disconnectDropboxProvider()}
+                  disabled={!!busy}
+                >
+                  Disconnect
+                </button>
+              ) : (
+                <button
+                  className="primary"
+                  onClick={() => void connectDropbox()}
+                  disabled={!!busy || dropbox.pending || !dropbox.configured}
+                >
+                  {dropbox.pending ? "Waiting…" : "Connect Dropbox"}
+                </button>
+              ))}
+            {provider === "webdav" && webdav.connected && (
               <button
                 className="ghost"
-                onClick={() => void disconnectDrive()}
+                onClick={() => void disconnectWebdavProvider()}
                 disabled={!!busy}
               >
                 Disconnect
-              </button>
-            ) : (
-              <button
-                className="primary"
-                onClick={() => void connectDrive()}
-                disabled={!!busy || drive.pending || !drive.client_id}
-              >
-                {drive.pending ? "Waiting…" : "Connect Drive"}
               </button>
             )}
             {selectedGame ? (
               <button
                 className="ghost"
                 onClick={() => void syncSelected()}
-                disabled={!!busy || !drive.connected}
+                disabled={!!busy || !activeConnected}
                 title={
-                  drive.connected
-                    ? "Sync the selected game with Google Drive"
-                    : "Connect Google Drive first"
+                  activeConnected
+                    ? `Sync the selected game with ${providerHeading}`
+                    : connectHint
                 }
               >
-                {busy === "Syncing with Google Drive" ? "Syncing…" : "Sync now"}
+                {busy === syncLabel ? "Syncing…" : "Sync now"}
               </button>
             ) : (
               <>
@@ -1460,7 +1805,7 @@ export default function App() {
             )}
           </div>
 
-          {authUrl && (
+          {provider === "google" && authUrl && (
             <p className="muted tiny break">
               Browser did not open?{" "}
               <button
@@ -1475,7 +1820,7 @@ export default function App() {
               </button>
             </p>
           )}
-          {drive.error && <p className="error small">{drive.error}</p>}
+          {providerError && <p className="error small">{providerError}</p>}
         </section>
       </section>
     );
@@ -1597,20 +1942,28 @@ export default function App() {
             aria-pressed={theme === "dark"}
           >
             {theme === "light" ? (
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <circle cx="12" cy="12" r="5" />
-                <line x1="12" y1="1" x2="12" y2="3" />
-                <line x1="12" y1="21" x2="12" y2="23" />
-                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
-                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-                <line x1="1" y1="12" x2="3" y2="12" />
-                <line x1="21" y1="12" x2="23" y2="12" />
-                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
-                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <g fill="currentColor">
+                  <circle cx="12" cy="12" r="4.7" />
+                  {[0, 45, 90, 135, 180, 225, 270, 315].map((angle) => (
+                    <rect
+                      key={angle}
+                      x="11.05"
+                      y="1.7"
+                      width="1.9"
+                      height="3.2"
+                      rx="0.95"
+                      transform={`rotate(${angle} 12 12)`}
+                    />
+                  ))}
+                </g>
               </svg>
             ) : (
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path
+                  fill="currentColor"
+                  d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z"
+                />
               </svg>
             )}
           </button>
@@ -1692,7 +2045,7 @@ export default function App() {
               aria-current={view === item.view ? "page" : undefined}
               onClick={() => setView(item.view)}
             >
-              <span className="nav-icon" aria-hidden="true">
+              <span className="nav-icon" aria-hidden="true" data-view={item.view}>
                 <NavGlyph view={item.view} />
               </span>
               <span className="nav-label">{item.label}</span>
@@ -1770,13 +2123,13 @@ export default function App() {
                 role="menuitem"
                 tabIndex={-1}
                 className="menu-item"
-                disabled={!!busy || !drive.connected}
+                disabled={!!busy || !activeConnected}
                 title={
-                  drive.connected
+                  activeConnected
                     ? busy
                       ? "Syncing…"
-                      : "Sync revisions with Google Drive"
-                    : "Connect Google Drive first"
+                      : `Sync revisions with ${providerHeading}`
+                    : connectHint
                 }
                 onClick={(event) => {
                   event.stopPropagation();
@@ -1784,7 +2137,7 @@ export default function App() {
                   if (menuGameId) void syncGame(menuGameId);
                 }}
               >
-                {busy === "Syncing with Google Drive" ? "Syncing…" : "Sync now"}
+                {busy === syncLabel ? "Syncing…" : "Sync now"}
               </button>
               <button
                 type="button"
@@ -1973,8 +2326,8 @@ export default function App() {
                             display: "grid",
                             placeItems: "center",
                             padding: "4px",
-                            background: "rgba(0, 0, 0, 0.72)",
-                            color: "#fff",
+                            background: "var(--scrim-strong)",
+                            color: "var(--ink-inverse)",
                             fontSize: "0.68rem",
                             lineHeight: 1.2,
                             textAlign: "center",
@@ -1990,8 +2343,8 @@ export default function App() {
                             inset: 0,
                             display: "grid",
                             placeItems: "center",
-                            background: "rgba(0, 0, 0, 0.55)",
-                            color: "#fff",
+                            background: "var(--scrim-strong)",
+                            color: "var(--ink-inverse)",
                             fontSize: "0.8rem",
                           }}
                         >

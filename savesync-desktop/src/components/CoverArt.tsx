@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useId, useMemo, useState } from "react";
 import { coverFor } from "../lib/cover";
 
 /**
@@ -31,9 +31,43 @@ const GeneratedArtwork = memo(function GeneratedArtwork({ title }: { title: stri
   const { palette, motif, monogram } = useMemo(() => coverFor(title), [title]);
   const glyphSize = Array.from(monogram).length > 1 ? 216 : 268;
 
+  /**
+   * Per-instance gradient ids. The same title can be on screen twice (library
+   * tile and detail cover) and SVG ids are document-global, so a shared id
+   * would make the second cover resolve the first one's gradient. `useId`
+   * returns a React-shaped value (`:r0:`), reduced here to id-safe characters.
+   */
+  const instanceId = useId().replace(/[^a-zA-Z0-9_-]/g, "");
+  const washId = `cover-wash-${instanceId}`;
+  const glossId = `cover-gloss-${instanceId}`;
+
+  /**
+   * Sheen tone, taken from the palette itself: ink on a light field (a faint
+   * grey gloss), bg on a dark field (a faint shadowed top edge).
+   */
+  const sheen = palette.field === "light" ? palette.ink : palette.bg;
+
   return (
     <svg viewBox="0 0 600 900" preserveAspectRatio="xMidYMid slice" focusable="false">
-      <rect width="600" height="900" fill={palette.bg} />
+      <defs>
+        {/*
+         * Vertical wash: the field holds flat `bg` through the upper half and
+         * settles toward `bg2` at the bottom, so the cover reads as a lit
+         * surface instead of a flat poster.
+         */}
+        <linearGradient id={washId} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor={palette.bg} />
+          <stop offset="0.5" stopColor={palette.bg} />
+          <stop offset="1" stopColor={palette.bg2} />
+        </linearGradient>
+        {/* Top gloss: a diagonal sheen fading out before the crest. */}
+        <linearGradient id={glossId} x1="0" y1="0" x2="0.55" y2="1">
+          <stop offset="0" stopColor={sheen} stopOpacity="0.16" />
+          <stop offset="0.42" stopColor={sheen} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+
+      <rect width="600" height="900" fill={`url(#${washId})`} />
 
       {/* One large flat shape breaks the field into two tones. */}
       <rect
@@ -53,6 +87,12 @@ const GeneratedArtwork = memo(function GeneratedArtwork({ title }: { title: stri
         fill={palette.bg2}
         opacity="0.55"
       />
+
+      {/*
+       * Gloss sits under the crest and the monogram, so the verified ink-on-bg
+       * contrast of the glyph is never modified by the sheen.
+       */}
+      <rect width="600" height="520" fill={`url(#${glossId})`} />
 
       <g fill="none" stroke={palette.accent} strokeWidth="2.5">
         {motif === "rings" && (
@@ -135,6 +175,18 @@ const GeneratedArtwork = memo(function GeneratedArtwork({ title }: { title: stri
       >
         {monogram}
       </text>
+
+      <rect
+        x="12"
+        y="12"
+        width="576"
+        height="876"
+        rx="42"
+        fill="none"
+        stroke={palette.ink}
+        strokeOpacity="0.07"
+        strokeWidth="1.5"
+      />
 
       <rect
         x="28"
