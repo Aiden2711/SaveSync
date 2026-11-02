@@ -223,10 +223,12 @@ focus. It must not become the ordinary border of every card.
   Google Drive / Dropbox / WebDAV, with a gradient indicator under the pressed segment. One
   panel below it, titled with the active provider's name, carries that provider's fields
   (Drive connect/disconnect, Dropbox app key, WebDAV endpoint/username/password), its status
-  line, and the connect/sync controls. Secrets live in forms read at submit time and are never
-  copied into React state. The provider heading is reused verbatim in sync labels, so the
-  panel and the action can never disagree. Drive scope follows `savesync-docs/ADR-0001.md`
-  (`drive.file`).
+  line, and the connect/sync controls. The status chip expresses state through the accent token
+  (`Connected`, `Waiting for sign-in`, `Not connected`) rather than a separate success palette,
+  so a red `.error` line beside it is the only colour-coded failure cue. Secrets live in forms
+  read at submit time and are never copied into React state. The provider heading is reused
+  verbatim in sync labels, so the panel and the action can never disagree. Drive scope follows
+  `savesync-docs/ADR-0001.md` (`drive.file`).
 - **Empty states** teach the next action; they do not apologise.
 
 ## Cover art

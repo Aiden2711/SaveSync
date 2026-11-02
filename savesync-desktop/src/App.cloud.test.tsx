@@ -6,6 +6,7 @@ import {
   installTauriStub,
   seedActiveProvider,
   seedDropboxConnected,
+  seedProviderStatus,
   uninstallTauriStub,
 } from "./test/tauri-stub";
 import type { InvokeCall } from "./test/tauri-stub";
@@ -123,6 +124,48 @@ describe("WebDAV settings", () => {
       ),
     ).toBeInTheDocument();
     expect(screen.queryByText(/pa55word-sentinel/)).toBeNull();
+  });
+
+  it("shows a rejected credential next to the fields with a stored-secret hint", async () => {
+    seedActiveProvider("webdav");
+    seedProviderStatus("webdav", {
+      identifier: "https://dav.example.com/savesync",
+      configured: true,
+      connected: false,
+      pending: false,
+      error: "Password rejected",
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await openCloud(user);
+
+    const alert = await screen.findByRole("alert");
+    // The failure keeps its own wording; the next step is added beside it.
+    expect(alert).toHaveTextContent(
+      "Password rejected. Check the endpoint, username, and password, then try again.",
+    );
+
+    // A password IS stored, so the empty field names the keyring rather than
+    // implying there is nothing saved — and it still renders no value.
+    const password = screen.getByLabelText("Password");
+    expect(password).toHaveAttribute("type", "password");
+    expect(password).toHaveAttribute("placeholder", "Stored in the OS keyring");
+    expect((password as HTMLInputElement).value).toBe("");
+
+    // Field-adjacent: after this provider's form, before the action row.
+    const form = screen
+      .getByRole("button", { name: "Save and connect" })
+      .closest("form");
+    const actionRow = screen.getByText("No game selected.").closest(".row");
+    expect(form).not.toBeNull();
+    expect(actionRow).not.toBeNull();
+    expect(
+      form!.compareDocumentPosition(alert) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      alert.compareDocumentPosition(actionRow!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 });
 

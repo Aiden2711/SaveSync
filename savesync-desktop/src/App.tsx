@@ -80,6 +80,28 @@ function shortId(id: string): string {
   return id.slice(0, 8);
 }
 
+/**
+ * "What to do" half of a provider error line.
+ *
+ * The backend owns what happened — those strings are surfaced verbatim and are
+ * never rewritten here — so the next step is added at the presentation layer.
+ * A message that already carries advice is left alone, so the line never reads
+ * as two competing instructions.
+ */
+const PROVIDER_ERROR_ADVICE: Record<ProviderKind, string> = {
+  google: "Check the OAuth client id, then connect again.",
+  dropbox: "Check the app key, then connect again.",
+  webdav: "Check the endpoint, username, and password, then try again.",
+};
+
+function providerErrorText(kind: ProviderKind, message: string): string {
+  if (/(try again|connect again|reconnect|check )/i.test(message)) {
+    return message;
+  }
+  const whatHappened = message.trim().replace(/[.!?]+$/, "");
+  return `${whatHappened}. ${PROVIDER_ERROR_ADVICE[kind]}`;
+}
+
 /** State of the "Choose cover art" modal. */
 type CoverPickerState = {
   gameId: string;
@@ -1714,7 +1736,7 @@ export default function App() {
                     type="password"
                     defaultValue=""
                     placeholder={
-                      webdav.connected ? "Stored in the OS keyring" : "WebDAV password"
+                      webdav.configured ? "Stored in the OS keyring" : "WebDAV password"
                     }
                     autoComplete="current-password"
                     spellCheck={false}
@@ -1730,6 +1752,14 @@ export default function App() {
                 </button>
               </form>
             </>
+          )}
+
+          {/* Directly under this provider's fields: what failed and what to do
+              next, announced as one line. */}
+          {providerError && (
+            <p className="error small" role="alert">
+              {providerErrorText(provider, providerError)}
+            </p>
           )}
 
           <div className="row">
@@ -1820,7 +1850,6 @@ export default function App() {
               </button>
             </p>
           )}
-          {providerError && <p className="error small">{providerError}</p>}
         </section>
       </section>
     );
