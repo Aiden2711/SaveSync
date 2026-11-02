@@ -329,10 +329,38 @@ mod tests {
             .unwrap()
     }
 
-    fn send(redirect: &str, query: &str) -> String {
+    /// Deadline handed to [`OAuthFlow::finish`] in these tests. Production
+    /// passes five minutes (`OAUTH_TIMEOUT`); tests only need to outlast thread
+    /// startup while the full suite runs in parallel, so they get their own
+    /// wide margin. The production deadline is untouched.
+    const FLOW_DEADLINE: Duration = Duration::from_secs(30);
+    /// Bound on listener-readiness probes and the gap between them.
+    const READY_ATTEMPTS: usize = 50;
+    const READY_BACKOFF: Duration = Duration::from_millis(50);
+
+    /// Dial the loopback listener, tolerating the window between
+    /// [`OAuthFlow::start`] returning and the accept loop spinning up on the
+    /// `finish` thread. Only the connect is retried; anything the listener
+    /// actually answers is returned untouched, so no assertion is relaxed.
+    fn connect(redirect: &str) -> TcpStream {
         let url = Url::parse(redirect).unwrap();
-        let mut stream =
-            TcpStream::connect((url.host_str().unwrap(), url.port().unwrap())).unwrap();
+        let address = (url.host_str().unwrap(), url.port().unwrap());
+        let mut last = String::from("not attempted");
+        for _ in 0..READY_ATTEMPTS {
+            match TcpStream::connect(address) {
+                Ok(stream) => return stream,
+                Err(error) => last = error.to_string(),
+            }
+            std::thread::sleep(READY_BACKOFF);
+        }
+        panic!(
+            "loopback listener at {redirect} never accepted a connection \
+             ({READY_ATTEMPTS} attempts, {READY_BACKOFF:?} apart): {last}"
+        );
+    }
+
+    fn send(redirect: &str, query: &str) -> String {
+        let mut stream = connect(redirect);
         stream
             .write_all(
                 format!(
@@ -357,8 +385,7 @@ mod tests {
         let transport = Arc::new(TokenTransport {
             response: Mutex::new(Some(token_response())),
         });
-        let handle =
-            std::thread::spawn(move || flow.finish(transport.as_ref(), Duration::from_secs(5)));
+        let handle = std::thread::spawn(move || flow.finish(transport.as_ref(), FLOW_DEADLINE));
 
         let response = send(&redirect, &format!("code=abc123&state={state}"));
         assert!(response.starts_with("HTTP/1.1 200 OK"));
@@ -378,8 +405,7 @@ mod tests {
         let transport = Arc::new(TokenTransport {
             response: Mutex::new(Some(token_response())),
         });
-        let handle =
-            std::thread::spawn(move || flow.finish(transport.as_ref(), Duration::from_secs(10)));
+        let handle = std::thread::spawn(move || flow.finish(transport.as_ref(), FLOW_DEADLINE));
 
         // Wrong state: the callback is refused, but the listener stays up.
         let rejected = send(&redirect, "code=abc&state=wrong");
@@ -404,8 +430,7 @@ mod tests {
         let transport = Arc::new(TokenTransport {
             response: Mutex::new(Some(token_response())),
         });
-        let handle =
-            std::thread::spawn(move || flow.finish(transport.as_ref(), Duration::from_secs(5)));
+        let handle = std::thread::spawn(move || flow.finish(transport.as_ref(), FLOW_DEADLINE));
 
         let response = send(
             &redirect,
@@ -434,8 +459,7 @@ mod tests {
         let transport = Arc::new(TokenTransport {
             response: Mutex::new(Some(token_response())),
         });
-        let handle =
-            std::thread::spawn(move || flow.finish(transport.as_ref(), Duration::from_secs(5)));
+        let handle = std::thread::spawn(move || flow.finish(transport.as_ref(), FLOW_DEADLINE));
 
         let response = send(&redirect, &format!("code=abc123&state={state}"));
         assert!(response.starts_with("HTTP/1.1 200 OK"));
@@ -452,8 +476,7 @@ mod tests {
         let transport = Arc::new(TokenTransport {
             response: Mutex::new(Some(token_response())),
         });
-        let handle =
-            std::thread::spawn(move || flow.finish(transport.as_ref(), Duration::from_secs(10)));
+        let handle = std::thread::spawn(move || flow.finish(transport.as_ref(), FLOW_DEADLINE));
         let rejected = send(&redirect, "code=abc&state=wrong");
         assert!(rejected.starts_with("HTTP/1.1 400 Bad Request"));
         // The rejection page must not name a vendor.
@@ -473,8 +496,7 @@ mod tests {
         let transport = Arc::new(TokenTransport {
             response: Mutex::new(Some(token_response())),
         });
-        let handle =
-            std::thread::spawn(move || flow.finish(transport.as_ref(), Duration::from_secs(5)));
+        let handle = std::thread::spawn(move || flow.finish(transport.as_ref(), FLOW_DEADLINE));
 
         let response = send(
             &redirect,
