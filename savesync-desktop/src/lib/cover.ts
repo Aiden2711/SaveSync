@@ -64,6 +64,10 @@ export type CoverMotif = (typeof COVER_MOTIFS)[number];
 export const ADAPTER_LABELS: Record<string, string> = {
   custom_directory: "Custom folder",
   ludusavi: "Ludusavi (PC)",
+  lutris: "Lutris",
+  // Covers Proton `compatdata` prefixes, Steam Cloud `userdata`, and installed
+  // games' own `saves` folders, so the label stays at the platform name.
+  steam: "Steam",
   emulator: "Emulator",
   jksv: "JKSV export",
 };

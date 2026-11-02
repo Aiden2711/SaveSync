@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::db::Db;
 use crate::error::{Error, Result};
 use crate::models::AdapterType;
+use crate::paths::validate_discovered_path;
 
 const LUDUSAVI_MANIFEST_URL: &str =
     "https://raw.githubusercontent.com/mtkennerly/ludusavi-manifest/master/data/manifest.yaml";
@@ -28,12 +29,40 @@ pub enum DiscoverySource {
 }
 
 /// A discovered save game candidate.
+///
+/// `save_paths` only ever contains paths that pass the same validation
+/// enrollment applies (`paths::validate_discovered_path`); candidates that fail
+/// are counted in `skipped_paths` and dropped, because discovery reads
+/// third-party metadata and must never let one bad entry abort a scan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiscoveredGame {
     pub title: String,
     pub adapter_type: AdapterType,
     pub save_paths: Vec<PathBuf>,
     pub source: DiscoverySource,
+    #[serde(default)]
+    pub skipped_paths: usize,
+}
+
+/// Validate candidate save paths, keeping the ones enrollment would accept.
+///
+/// Returns the validated (canonical) paths and the number of rejected
+/// candidates. Order is preserved and duplicates collapse, so callers can
+/// extend a list without re-sorting.
+fn accept_discovered_paths(candidates: impl IntoIterator<Item = PathBuf>) -> (Vec<PathBuf>, usize) {
+    let mut accepted: Vec<PathBuf> = Vec::new();
+    let mut skipped = 0usize;
+    for candidate in candidates {
+        match validate_discovered_path(&candidate) {
+            Ok(canonical) => {
+                if !accepted.contains(&canonical) {
+                    accepted.push(canonical);
+                }
+            }
+            Err(_) => skipped += 1,
+        }
+    }
+    (accepted, skipped)
 }
 
 /// Serde struct for Ludusavi manifest game entry.
@@ -323,15 +352,15 @@ pub fn discover_ludusavi(db: &mut Db) -> Vec<DiscoveredGame> {
     let sys = SystemPaths::detect();
 
     for (title, entry) in entries {
-        let mut save_paths = Vec::new();
+        let mut candidates = Vec::new();
         if let Some(files) = entry.files {
             for (pattern, _) in files {
                 let resolved = sys.replace_placeholders(&pattern, &title);
-                let expanded = expand_glob_pattern(&resolved);
-                save_paths.extend(expanded);
+                candidates.extend(expand_glob_pattern(&resolved));
             }
         }
 
+        let (mut save_paths, skipped_paths) = accept_discovered_paths(candidates);
         if !save_paths.is_empty() {
             save_paths.sort();
             save_paths.dedup();
@@ -340,6 +369,7 @@ pub fn discover_ludusavi(db: &mut Db) -> Vec<DiscoveredGame> {
                 adapter_type: AdapterType::Ludusavi,
                 save_paths,
                 source: DiscoverySource::Ludusavi { title },
+                skipped_paths,
             });
         }
     }
@@ -347,12 +377,10 @@ pub fn discover_ludusavi(db: &mut Db) -> Vec<DiscoveredGame> {
     results
 }
 
-/// Discover games from Lutris (Linux configuration files).
-pub fn discover_lutris() -> Vec<DiscoveredGame> {
-    let mut results = Vec::new();
-
+/// Candidate directories holding Lutris game configuration files.
+fn lutris_config_dirs() -> Vec<PathBuf> {
     let sys = SystemPaths::detect();
-    let lutris_dirs = vec![
+    vec![
         sys.xdg_config.join("lutris").join("games"),
         sys.xdg_data.join("lutris").join("games"),
         sys.home.join(".config").join("lutris").join("games"),
@@ -361,9 +389,19 @@ pub fn discover_lutris() -> Vec<DiscoveredGame> {
             .join("share")
             .join("lutris")
             .join("games"),
-    ];
+    ]
+}
 
-    for dir in lutris_dirs {
+/// Discover games from Lutris (Linux configuration files).
+pub fn discover_lutris() -> Vec<DiscoveredGame> {
+    discover_lutris_in(lutris_config_dirs())
+}
+
+/// Scan the given Lutris configuration directories.
+fn discover_lutris_in(dirs: impl IntoIterator<Item = PathBuf>) -> Vec<DiscoveredGame> {
+    let mut results = Vec::new();
+
+    for dir in dirs {
         if let Ok(entries) = fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -392,26 +430,28 @@ pub fn discover_lutris() -> Vec<DiscoveredGame> {
                         .and_then(|g| g.get("prefix"))
                         .and_then(|p| p.as_str());
 
-                    let mut save_paths = Vec::new();
+                    let mut candidates = Vec::new();
                     if let Some(p) = prefix {
                         let prefix_path = PathBuf::from(p);
                         let pfx_user = prefix_path.join("drive_c").join("users").join("steamuser");
                         if pfx_user.exists() {
-                            save_paths.push(pfx_user);
+                            candidates.push(pfx_user);
                         } else {
                             let users_dir = prefix_path.join("drive_c").join("users");
                             if users_dir.exists() {
-                                save_paths.push(users_dir);
+                                candidates.push(users_dir);
                             }
                         }
                     }
 
+                    let (save_paths, skipped_paths) = accept_discovered_paths(candidates);
                     if !save_paths.is_empty() {
                         results.push(DiscoveredGame {
                             title: name,
-                            adapter_type: AdapterType::Emulator,
+                            adapter_type: AdapterType::Lutris,
                             save_paths,
                             source: DiscoverySource::Lutris { slug },
+                            skipped_paths,
                         });
                     }
                 }
@@ -556,10 +596,14 @@ fn find_steam_libraries() -> Vec<PathBuf> {
 
 /// Discover games from Steam and Proton prefixes.
 pub fn discover_steam() -> Vec<DiscoveredGame> {
-    let mut results = Vec::new();
-    let libraries = find_steam_libraries();
+    discover_steam_in(&find_steam_libraries())
+}
 
-    for lib in &libraries {
+/// Scan the given Steam library roots.
+fn discover_steam_in(libraries: &[PathBuf]) -> Vec<DiscoveredGame> {
+    let mut results = Vec::new();
+
+    for lib in libraries {
         let steamapps = lib.join("steamapps");
         if !steamapps.exists() {
             continue;
@@ -579,7 +623,8 @@ pub fn discover_steam() -> Vec<DiscoveredGame> {
                     let name = manifest.name;
                     let install_dir_str = manifest.installdir;
 
-                    let mut save_paths = Vec::new();
+                    let mut skipped_paths = 0usize;
+                    let mut candidates: Vec<PathBuf> = Vec::new();
 
                     // 1. Proton compatdata prefix
                     let proton_pfx = steamapps
@@ -590,13 +635,19 @@ pub fn discover_steam() -> Vec<DiscoveredGame> {
                         .join("users")
                         .join("steamuser");
                     if proton_pfx.exists() {
-                        save_paths.push(proton_pfx.clone());
-                        results.push(DiscoveredGame {
-                            title: format!("{} (Proton)", name),
-                            adapter_type: AdapterType::Emulator,
-                            save_paths: vec![proton_pfx],
-                            source: DiscoverySource::Proton { appid },
-                        });
+                        match validate_discovered_path(&proton_pfx) {
+                            Ok(canonical) => {
+                                candidates.push(canonical.clone());
+                                results.push(DiscoveredGame {
+                                    title: format!("{} (Proton)", name),
+                                    adapter_type: AdapterType::Steam,
+                                    save_paths: vec![canonical],
+                                    source: DiscoverySource::Proton { appid },
+                                    skipped_paths: 0,
+                                });
+                            }
+                            Err(_) => skipped_paths += 1,
+                        }
                     }
 
                     // 2. Steam Cloud userdata
@@ -607,7 +658,7 @@ pub fn discover_steam() -> Vec<DiscoveredGame> {
                         for u_entry in user_entries.flatten() {
                             let remote_path = u_entry.path().join(&appid_str).join("remote");
                             if remote_path.exists() {
-                                save_paths.push(remote_path);
+                                candidates.push(remote_path);
                             }
                         }
                     }
@@ -618,17 +669,20 @@ pub fn discover_steam() -> Vec<DiscoveredGame> {
                         if common_install.exists() {
                             let saves_dir = common_install.join("saves");
                             if saves_dir.exists() {
-                                save_paths.push(saves_dir);
+                                candidates.push(saves_dir);
                             }
                         }
                     }
 
+                    let (save_paths, skipped) = accept_discovered_paths(candidates);
+                    skipped_paths += skipped;
                     if !save_paths.is_empty() {
                         results.push(DiscoveredGame {
                             title: name,
-                            adapter_type: AdapterType::Ludusavi,
+                            adapter_type: AdapterType::Steam,
                             save_paths,
                             source: DiscoverySource::Steam { appid },
+                            skipped_paths,
                         });
                     }
                 }
@@ -653,6 +707,9 @@ pub fn discover_all_games(db: &mut Db) -> Vec<DiscoveredGame> {
     for game in all {
         let norm_key = game.title.trim().to_lowercase();
         if let Some(existing) = map.get_mut(&norm_key) {
+            // A merged source may have dropped candidates of its own, so the
+            // reported count must include them rather than only the first hit.
+            existing.skipped_paths += game.skipped_paths;
             for path in game.save_paths {
                 if !existing.save_paths.contains(&path) {
                     existing.save_paths.push(path);
@@ -670,6 +727,8 @@ pub fn discover_all_games(db: &mut Db) -> Vec<DiscoveredGame> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     #[test]
@@ -851,5 +910,168 @@ mod tests {
         );
         // Malformed document.
         assert_eq!(parse_app_manifest(r#""AppState" { "appid" "12345" "#), None);
+    }
+
+    // --- Discovery path validation -------------------------------------------
+
+    /// Create `<dir>/drive_c/users/steamuser` and return the prefix root.
+    fn make_prefix(dir: &Path, name: &str) -> PathBuf {
+        let prefix = dir.join(name);
+        fs::create_dir_all(prefix.join("drive_c").join("users").join("steamuser")).unwrap();
+        prefix
+    }
+
+    /// Write a Lutris game entry pointing at `prefix`.
+    fn write_lutris_game(dir: &Path, file: &str, name: &str, prefix: &Path) {
+        fs::create_dir_all(dir).unwrap();
+        // Forward slashes keep the YAML free of escape sequences on Windows.
+        let prefix = prefix.to_string_lossy().replace('\\', "/");
+        let yaml = format!("name: \"{name}\"\ngame:\n  prefix: \"{prefix}\"\n");
+        fs::write(dir.join(file), yaml).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn try_symlink_dir(target: &Path, link: &Path) -> bool {
+        std::os::unix::fs::symlink(target, link).is_ok()
+    }
+
+    #[cfg(windows)]
+    fn try_symlink_dir(target: &Path, link: &Path) -> bool {
+        std::os::windows::fs::symlink_dir(target, link).is_ok()
+    }
+
+    #[test]
+    fn test_accept_discovered_paths_skips_unenrollable_candidates() {
+        let dir = tempfile::tempdir().unwrap();
+        let valid = make_prefix(dir.path(), "pfx");
+
+        let candidates = vec![
+            valid.join("drive_c").join("users").join("steamuser"),
+            // Remote share: never a local save directory.
+            PathBuf::from(r"\\server\share\saves"),
+            // Escapes through a parent component.
+            valid
+                .join("drive_c")
+                .join("users")
+                .join("steamuser")
+                .join("..")
+                .join(".."),
+            // Not absolute.
+            PathBuf::from("relative/saves"),
+            // Does not exist.
+            dir.path().join("missing"),
+        ];
+
+        let (accepted, skipped) = accept_discovered_paths(candidates);
+        assert_eq!(skipped, 4);
+        assert_eq!(
+            accepted,
+            vec![
+                valid
+                    .join("drive_c")
+                    .join("users")
+                    .join("steamuser")
+                    .canonicalize()
+                    .unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_discover_lutris_uses_lutris_adapter_and_skips_escaping_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let games = dir.path().join("games");
+
+        let good = make_prefix(dir.path(), "good-prefix");
+        write_lutris_game(&games, "good.yml", "Good Game", &good);
+
+        // The same prefix spelled with a parent component: the candidate exists
+        // but resolves through `..`, exactly what enrollment rejects.
+        let escaping = good.join("..").join("good-prefix");
+        write_lutris_game(&games, "escaping.yml", "Escaping Game", &escaping);
+
+        let found = discover_lutris_in(vec![games]);
+
+        assert_eq!(found.len(), 1, "only the enrollable game is reported");
+        let game = &found[0];
+        assert_eq!(game.title, "Good Game");
+        assert_eq!(game.adapter_type, AdapterType::Lutris);
+        assert_eq!(game.save_paths.len(), 1);
+        assert!(game.save_paths[0].ends_with("steamuser"));
+        assert!(validate_discovered_path(&game.save_paths[0]).is_ok());
+    }
+
+    #[test]
+    fn test_discover_lutris_skips_symlinked_save_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let games = dir.path().join("games");
+        let prefix = dir.path().join("linked-prefix");
+        let users = prefix.join("drive_c").join("users");
+        fs::create_dir_all(&users).unwrap();
+
+        let real = dir.path().join("real-saves");
+        fs::create_dir_all(&real).unwrap();
+        if !try_symlink_dir(&real, &users.join("steamuser")) {
+            // Creating symlinks is privilege-gated on Windows; nothing to prove.
+            return;
+        }
+        write_lutris_game(&games, "linked.yml", "Linked Game", &prefix);
+
+        let found = discover_lutris_in(vec![games]);
+        assert!(
+            found.is_empty(),
+            "a symlinked save directory is not proposed for enrollment"
+        );
+    }
+
+    #[test]
+    fn test_discover_steam_uses_steam_adapter() {
+        let dir = tempfile::tempdir().unwrap();
+        let library = dir.path().join("steamlib");
+        let steamapps = library.join("steamapps");
+        fs::create_dir_all(&steamapps).unwrap();
+        fs::write(
+            steamapps.join("appmanifest_480.acf"),
+            r#""AppState"
+{
+    "appid"      "480"
+    "name"       "Steam Test"
+    "installdir" "SteamTest"
+}
+"#,
+        )
+        .unwrap();
+        let proton_pfx = steamapps
+            .join("compatdata")
+            .join("480")
+            .join("pfx")
+            .join("drive_c")
+            .join("users")
+            .join("steamuser");
+        fs::create_dir_all(&proton_pfx).unwrap();
+
+        let found = discover_steam_in(&[library]);
+
+        let proton = found
+            .iter()
+            .find(|game| matches!(game.source, DiscoverySource::Proton { appid } if appid == 480))
+            .expect("Proton prefix should be discovered");
+        assert_eq!(proton.adapter_type, AdapterType::Steam);
+        assert_eq!(proton.title, "Steam Test (Proton)");
+        assert_eq!(proton.save_paths, vec![proton_pfx.canonicalize().unwrap()]);
+
+        let steam = found
+            .iter()
+            .find(|game| matches!(game.source, DiscoverySource::Steam { appid } if appid == 480))
+            .expect("Steam cloud candidate should be discovered");
+        assert_eq!(steam.adapter_type, AdapterType::Steam);
+        assert_eq!(steam.skipped_paths, 0);
+        for path in &steam.save_paths {
+            assert!(
+                validate_discovered_path(path).is_ok(),
+                "{} must be enrollable",
+                path.display()
+            );
+        }
     }
 }

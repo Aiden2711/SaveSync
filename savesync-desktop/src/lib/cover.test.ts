@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  ADAPTER_LABELS,
   COVER_MOTIFS,
   COVER_PALETTES,
   COVER_PALETTES_BY_FIELD,
+  adapterLabel,
   coverFor,
   fieldFor,
   monogramFor,
@@ -53,6 +55,33 @@ describe("monogramFor", () => {
     expect(monogramFor("Pokémon Écarlate")).toBe("PE");
     expect(monogramFor("'-Hades'")).toBe("H");
     expect(monogramFor("!!!")).toBe("?");
+  });
+});
+
+describe("adapterLabel", () => {
+  it("names every adapter the core can emit", () => {
+    // Pinned so a new core variant cannot reach the UI as a raw snake_case id.
+    expect(adapterLabel("custom_directory")).toBe("Custom folder");
+    expect(adapterLabel("ludusavi")).toBe("Ludusavi (PC)");
+    expect(adapterLabel("lutris")).toBe("Lutris");
+    expect(adapterLabel("steam")).toBe("Steam");
+    expect(adapterLabel("emulator")).toBe("Emulator");
+    expect(adapterLabel("jksv")).toBe("JKSV export");
+    expect(Object.keys(ADAPTER_LABELS).sort()).toEqual([
+      "custom_directory",
+      "emulator",
+      "jksv",
+      "ludusavi",
+      "lutris",
+      "steam",
+    ]);
+  });
+
+  it("leaves a stored legacy id readable and falls back to the raw id", () => {
+    // Lutris and Steam discoveries used to be persisted as "emulator"; the
+    // label for that id must keep working for those rows.
+    expect(adapterLabel("emulator")).toBe("Emulator");
+    expect(adapterLabel("future_adapter")).toBe("future adapter");
   });
 });
 

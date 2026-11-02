@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 pub enum AdapterType {
     /// Locations discovered through the Ludusavi CLI.
     Ludusavi,
+    /// Locations discovered from a Lutris game configuration.
+    Lutris,
+    /// Locations discovered from a Steam / Proton library scan.
+    Steam,
     /// A directory explicitly chosen by the user.
     CustomDirectory,
     /// Emulator memory cards or save directories.
@@ -20,15 +24,24 @@ impl AdapterType {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ludusavi => "ludusavi",
+            Self::Lutris => "lutris",
+            Self::Steam => "steam",
             Self::CustomDirectory => "custom_directory",
             Self::Emulator => "emulator",
             Self::Jksv => "jksv",
         }
     }
 
+    /// Parse a stored adapter identifier.
+    ///
+    /// Legacy rows are still readable: Lutris and Steam/Proton discoveries used
+    /// to be recorded as `"emulator"`, which continues to resolve to
+    /// [`AdapterType::Emulator`]. Only new rows carry the honest values.
     pub fn parse(value: &str) -> Option<Self> {
         Some(match value {
             "ludusavi" => Self::Ludusavi,
+            "lutris" => Self::Lutris,
+            "steam" => Self::Steam,
             "custom_directory" => Self::CustomDirectory,
             "emulator" => Self::Emulator,
             "jksv" => Self::Jksv,
@@ -197,4 +210,52 @@ pub struct RestoreReport {
     /// Digest of the live directory as it was before the restore.
     pub safety_backup_manifest_hash: String,
     pub safety_backup_path: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adapter_type_round_trips_through_its_stored_string() {
+        for adapter in [
+            AdapterType::Ludusavi,
+            AdapterType::Lutris,
+            AdapterType::Steam,
+            AdapterType::CustomDirectory,
+            AdapterType::Emulator,
+            AdapterType::Jksv,
+        ] {
+            assert_eq!(AdapterType::parse(adapter.as_str()), Some(adapter));
+        }
+        assert_eq!(AdapterType::Lutris.as_str(), "lutris");
+        assert_eq!(AdapterType::Steam.as_str(), "steam");
+    }
+
+    #[test]
+    fn adapter_type_keeps_legacy_emulator_rows_readable() {
+        // Lutris and Steam/Proton discoveries were persisted as "emulator"
+        // before the mislabel was corrected; those rows must keep loading.
+        assert_eq!(AdapterType::parse("emulator"), Some(AdapterType::Emulator));
+        let from_json: AdapterType = serde_json::from_str("\"emulator\"").unwrap();
+        assert_eq!(from_json, AdapterType::Emulator);
+    }
+
+    #[test]
+    fn adapter_type_serializes_to_snake_case_identifiers() {
+        for (adapter, stored) in [
+            (AdapterType::Ludusavi, "\"ludusavi\""),
+            (AdapterType::Lutris, "\"lutris\""),
+            (AdapterType::Steam, "\"steam\""),
+            (AdapterType::CustomDirectory, "\"custom_directory\""),
+            (AdapterType::Emulator, "\"emulator\""),
+            (AdapterType::Jksv, "\"jksv\""),
+        ] {
+            assert_eq!(serde_json::to_string(&adapter).unwrap(), stored);
+            assert_eq!(
+                serde_json::from_str::<AdapterType>(stored).unwrap(),
+                adapter
+            );
+        }
+    }
 }

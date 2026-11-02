@@ -1,5 +1,7 @@
 export type AdapterType =
   | "ludusavi"
+  | "lutris"
+  | "steam"
   | "custom_directory"
   | "emulator"
   | "jksv";
@@ -146,4 +148,6 @@ export interface DiscoveredGame {
   adapter_type: AdapterType;
   save_paths: string[];
   source: DiscoverySource;
+  /** Candidates dropped because they were not enrolable; never fails a scan. */
+  skipped_paths: number;
 }

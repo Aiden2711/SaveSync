@@ -4,7 +4,7 @@
 //! device, from cloud storage, or from a tampered local file. Every relative
 //! path is validated before it is joined onto a filesystem root.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 
 use crate::error::{Error, Result};
 
@@ -109,6 +109,47 @@ pub fn validate_root(path: impl AsRef<Path>) -> Result<PathBuf> {
     Ok(canonical)
 }
 
+/// Validate a save path proposed by a discovery source.
+///
+/// Discovery reads third-party metadata (Lutris game files, Steam `AppState`
+/// records, the Ludusavi manifest), so a candidate path is untrusted input that
+/// may name a remote share, escape through `..`, or be a link to somewhere
+/// else entirely. A candidate is only offered for enrollment, so it must pass
+/// every check [`validate_root`] applies, plus two discovery-only restrictions:
+///
+/// - Windows UNC, device and verbatim-UNC prefixes are rejected. They name a
+///   remote share or device, never a local save directory.
+/// - The path's final component must not be a symlink. A link can be re-pointed
+///   between discovery and enrollment, so it is never proposed as a location;
+///   `validate_root` still resolves intermediate links the way enrollment does.
+///
+/// The returned path is the canonical form, matching what enrollment stores.
+pub fn validate_discovered_path(path: impl AsRef<Path>) -> Result<PathBuf> {
+    let path = path.as_ref();
+    if !path.is_absolute() {
+        return Err(Error::UnsafePath(format!(
+            "save location must be an absolute path: {}",
+            path.display()
+        )));
+    }
+    if let Some(Component::Prefix(prefix)) = path.components().next()
+        && !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+    {
+        return Err(Error::UnsafePath(format!(
+            "save location must be a local path: {}",
+            path.display()
+        )));
+    }
+    let metadata = std::fs::symlink_metadata(path).map_err(|e| Error::io(path, e))?;
+    if metadata.file_type().is_symlink() {
+        return Err(Error::UnsafePath(format!(
+            "save location may not be a symlink: {}",
+            path.display()
+        )));
+    }
+    validate_root(path)
+}
+
 /// Convert an absolute path below `root` into a manifest-relative `/`-joined
 /// string. Fails if the path escapes `root`.
 pub fn relative_to(root: &Path, path: &Path) -> Result<String> {
@@ -202,5 +243,51 @@ mod tests {
             "slot1/a.bin"
         );
         assert!(relative_to(root, Path::new("/etc/passwd")).is_err());
+    }
+
+    #[test]
+    fn accepts_an_existing_directory_as_a_discovered_path() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            validate_discovered_path(dir.path()).unwrap(),
+            dir.path().canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn rejects_discovered_paths_enrollment_would_refuse() {
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().join("saves");
+        std::fs::create_dir_all(&existing).unwrap();
+
+        for bad in [
+            // Remote share or device name: never a local save directory.
+            PathBuf::from(r"\\server\share\saves"),
+            // Escapes through a parent component.
+            existing.join("..").join("saves"),
+            // Relative paths are not enrollable.
+            PathBuf::from("relative/saves"),
+            // Must exist.
+            dir.path().join("missing"),
+        ] {
+            assert!(
+                validate_discovered_path(&bad).is_err(),
+                "expected rejection for {}",
+                bad.display()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_symlinked_discovered_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real");
+        std::fs::create_dir_all(&target).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert!(validate_discovered_path(&link).is_err());
+        assert!(validate_discovered_path(&target).is_ok());
     }
 }
