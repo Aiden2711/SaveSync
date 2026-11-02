@@ -2115,19 +2115,39 @@ mod tests {
 
     /// Fails only when asked to store the new password, so a keyring failure
     /// still allows a clean rollback and the plain error survives unchanged.
-    struct FailsNewPasswordStore;
+    ///
+    /// It keeps state like a real store, and the failure is *destructive*: the
+    /// prior entry is dropped before the new write is reported as failed (some
+    /// backends delete then write). That way the post-failure assertion on the
+    /// stored token only holds if the rollback actually wrote the prior secret
+    /// back, instead of passing because the failed save never touched it.
+    struct FailsNewPasswordStore {
+        token: std::sync::Mutex<Option<String>>,
+    }
+
+    impl FailsNewPasswordStore {
+        fn new(token: Option<&str>) -> Self {
+            Self {
+                token: std::sync::Mutex::new(token.map(str::to_string)),
+            }
+        }
+    }
 
     impl TokenStore for FailsNewPasswordStore {
         fn load(&self) -> savesync_core::Result<Option<String>> {
-            Ok(None)
+            Ok(self.token.lock().expect("token mutex").clone())
         }
         fn save(&self, token: &str) -> savesync_core::Result<()> {
             if token == DAV_SENTINEL_PASSWORD {
+                // The prior entry is already gone by the time the write fails.
+                *self.token.lock().expect("token mutex") = None;
                 return Err(savesync_core::Error::Auth("keyring payload: leaked".into()));
             }
+            *self.token.lock().expect("token mutex") = Some(token.to_string());
             Ok(())
         }
         fn delete(&self) -> savesync_core::Result<()> {
+            *self.token.lock().expect("token mutex") = None;
             Ok(())
         }
     }
@@ -2215,7 +2235,7 @@ mod tests {
         // Fails the forward save but allows the restore, so this covers the
         // "rollback succeeded" branch; the all-failing store is covered by
         // `webdav_keyring_write_then_error_surfaces_the_residual...`.
-        let credentials = FailsNewPasswordStore;
+        let credentials = FailsNewPasswordStore::new(Some("old-password"));
 
         let error = persist_webdav_config(
             &mut settings,
@@ -2238,6 +2258,10 @@ mod tests {
             Some("https://old.example.com/savesync")
         );
         assert_eq!(settings.value(WEBDAV_USERNAME_SETTING), Some("old-user"));
+        // The failed forward save dropped the prior entry, so the stored secret
+        // is the prior one only because the rollback wrote it back. Deleting the
+        // restore `credentials.save(prior)` call leaves `None` here.
+        assert_eq!(credentials.load().unwrap().as_deref(), Some("old-password"));
     }
 
     /// A first-ever configuration has no prior value to write back, so the
@@ -2308,7 +2332,7 @@ mod tests {
     #[test]
     fn webdav_first_time_keyring_failure_removes_both_settings() {
         let mut settings = FakeSettings::with(&[]);
-        let credentials = FailsNewPasswordStore;
+        let credentials = FailsNewPasswordStore::new(None);
 
         let error = persist_webdav_config(
             &mut settings,
