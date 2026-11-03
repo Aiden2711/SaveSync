@@ -14,9 +14,12 @@
 //!   revisions. Live saves are never changed by sync.
 //! - [`watcher`]: passive save-directory change detection with debouncing.
 //! - [`artwork`]: optional, bounded SteamGridDB cover-art downloads.
+//! - [`adapters`]: the [`adapters::PlatformAdapter`] contract that decides how
+//!   each kind of save location is discovered, snapshotted, and restored.
 //!
 //! Nothing in this crate requires a network connection to operate.
 
+pub mod adapters;
 pub mod artwork;
 pub mod blob;
 pub mod credentials;
@@ -41,6 +44,10 @@ pub mod sync;
 pub mod watcher;
 pub mod webdav;
 
+pub use adapters::{
+    LocationCandidate, PlatformAdapter, RestoreContext, RestoreResult, adapter_for,
+    discovery_sources,
+};
 pub use artwork::{GridCandidate, MAX_GRID_BYTES, SteamGridDbClient};
 pub use credentials::{
     DROPBOX_ACCOUNT, GOOGLE_ACCOUNT, KeyringTokenStore, MemoryTokenStore, SERVICE, TokenStore,

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::adapters::{self, RestoreContext};
 use crate::artwork::{GridCandidate, SteamGridDbClient};
 use crate::blob::BlobStore;
 use crate::db::Db;
@@ -20,7 +21,7 @@ use crate::models::{
 };
 use crate::paths::validate_root;
 use crate::provider::SyncProvider;
-use crate::restore::{self, DataPaths, RestoreMode, RestoreRequest};
+use crate::restore::{self, DataPaths, RestoreMode};
 use crate::store;
 use crate::sync::{self, SyncDirection, SyncReport};
 
@@ -389,7 +390,7 @@ impl SaveSyncEngine {
     /// 2. Lutris configuration (Linux only)
     /// 3. Steam / Proton library scans
     pub fn discover_games(&mut self) -> Result<Vec<crate::discovery::DiscoveredGame>> {
-        Ok(crate::discovery::discover_all_games(&mut self.db))
+        Ok(adapters::discover_all(&mut self.db))
     }
 
     /// Capture the game's save directory as an immutable revision.
@@ -406,8 +407,11 @@ impl SaveSyncEngine {
         }
 
         let location = self.single_directory_location(game_id)?;
-        let root = validate_root(&location.path)?;
-        let manifest = Manifest::from_dir(&root)?;
+        // The enrolled location is the mapping, so the adapter that owns the
+        // game's kind both validates its root and captures it.
+        let adapter = adapters::adapter_for(game.adapter_type);
+        let root = adapter.validate_mapping(Path::new(&location.path))?;
+        let manifest = adapter.snapshot_location(&location.id, &root)?;
         let blob_hash = self.blobs.put(&manifest, &root)?;
         let manifest_hash = manifest.hash();
         if blob_hash != manifest_hash {
@@ -501,28 +505,36 @@ impl SaveSyncEngine {
         let revision = store::require_revision(self.db.connection(), revision_id)?;
         let locations = store::list_locations(self.db.connection(), &revision.game_id)?;
         let canonical_target = target_root.to_string_lossy().to_string();
-        let is_enrolled_location = locations.iter().any(|location| {
+        let location = locations.iter().find(|location| {
             Path::new(&location.path) == target_root
                 || Path::new(&location.path).to_string_lossy() == canonical_target
         });
-        if !is_enrolled_location {
+        let Some(location) = location else {
             return Err(Error::InvalidState(format!(
                 "restore target {} is not an enrolled location of game {}",
                 target_root.display(),
                 revision.game_id
             )));
-        }
+        };
 
-        restore::restore_revision(
-            &mut self.db,
-            &self.blobs,
-            &self.paths,
-            RestoreRequest {
-                game_id: revision.game_id,
-                revision_id: revision.id,
-                target_root,
+        // The adapter loads nothing new: the game and the manifest are read
+        // through the same store helpers the direct transaction used, and the
+        // adapter hands them to `restore::restore_revision`, which still owns
+        // staging, the safety backup, the journal, and rollback.
+        let game = store::require_game(self.db.connection(), &revision.game_id)?;
+        let manifest = store::load_manifest(self.db.connection(), &revision.manifest_hash)?;
+        adapters::adapter_for(game.adapter_type).restore_location(
+            RestoreContext {
+                db: &mut self.db,
+                blobs: &self.blobs,
+                paths: &self.paths,
+                game_id: &revision.game_id,
+                revision_id: &revision.id,
                 mode,
             },
+            &manifest,
+            &location.id,
+            &target_root,
         )
     }
 

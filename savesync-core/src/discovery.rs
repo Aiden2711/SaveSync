@@ -19,7 +19,7 @@ const LUDUSAVI_MANIFEST_URL: &str =
     "https://raw.githubusercontent.com/mtkennerly/ludusavi-manifest/master/data/manifest.yaml";
 
 /// Source of a discovered save game candidate.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DiscoverySource {
     Ludusavi { title: String },
@@ -398,7 +398,7 @@ pub fn discover_lutris() -> Vec<DiscoveredGame> {
 }
 
 /// Scan the given Lutris configuration directories.
-fn discover_lutris_in(dirs: impl IntoIterator<Item = PathBuf>) -> Vec<DiscoveredGame> {
+pub(crate) fn discover_lutris_in(dirs: impl IntoIterator<Item = PathBuf>) -> Vec<DiscoveredGame> {
     let mut results = Vec::new();
 
     for dir in dirs {
@@ -600,7 +600,7 @@ pub fn discover_steam() -> Vec<DiscoveredGame> {
 }
 
 /// Scan the given Steam library roots.
-fn discover_steam_in(libraries: &[PathBuf]) -> Vec<DiscoveredGame> {
+pub(crate) fn discover_steam_in(libraries: &[PathBuf]) -> Vec<DiscoveredGame> {
     let mut results = Vec::new();
 
     for lib in libraries {
@@ -694,35 +694,13 @@ fn discover_steam_in(libraries: &[PathBuf]) -> Vec<DiscoveredGame> {
 }
 
 /// Main entry point for discovering games across all sources with deduplication.
+///
+/// The per-source scans live in this module; the scan orchestration and the
+/// per-game merge now belong to [`crate::adapters`], where each source is a
+/// [`crate::adapters::PlatformAdapter`]. This forwards there so existing callers
+/// keep working unchanged.
 pub fn discover_all_games(db: &mut Db) -> Vec<DiscoveredGame> {
-    let mut all = Vec::new();
-
-    all.extend(discover_ludusavi(db));
-    all.extend(discover_lutris());
-    all.extend(discover_steam());
-
-    // Deduplicate by normalized title (case-insensitive)
-    let mut map: HashMap<String, DiscoveredGame> = HashMap::new();
-
-    for game in all {
-        let norm_key = game.title.trim().to_lowercase();
-        if let Some(existing) = map.get_mut(&norm_key) {
-            // A merged source may have dropped candidates of its own, so the
-            // reported count must include them rather than only the first hit.
-            existing.skipped_paths += game.skipped_paths;
-            for path in game.save_paths {
-                if !existing.save_paths.contains(&path) {
-                    existing.save_paths.push(path);
-                }
-            }
-        } else {
-            map.insert(norm_key, game);
-        }
-    }
-
-    let mut result: Vec<DiscoveredGame> = map.into_values().collect();
-    result.sort_by(|a, b| a.title.cmp(&b.title));
-    result
+    crate::adapters::discover_all(db)
 }
 
 #[cfg(test)]
