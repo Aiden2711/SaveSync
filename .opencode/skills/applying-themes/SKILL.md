@@ -51,7 +51,7 @@ A palette that looks good and fails 4.5:1 is unusable, and contrast is not eyeba
 
 Each `themes/<name>.md` carries the full palette with roles, the contrast requirements, a web font pairing plus a metric-safe PDF fallback, the scale ratio, and notes on how the theme fails if misused.
 
-> `theme-showcase.pdf` is a legacy visual from an earlier version of this skill and its colors and fonts **no longer match the theme files**. The markdown files are authoritative. Do not present the PDF as an accurate preview.
+> An earlier version of this skill shipped a `theme-showcase.pdf` visual; it was removed as obsolete because its colors and fonts **no longer matched the theme files**. The markdown files are authoritative, and no other visual preview should be presented as an accurate one.
 
 ## Presenting and Choosing
 

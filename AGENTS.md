@@ -487,6 +487,8 @@ Do not add permanent benchmark infrastructure or dependencies solely to support 
 
   ```bash
   ./savesync-docs/scripts/maint/verify-release.sh
+  # Windows: a bare `bash` may be the distro-less WSL stub, so invoke a real bash:
+  "C:\Program Files\Git\bin\bash.exe" ./savesync-docs/scripts/maint/verify-release.sh
   ```
 
   This script covers `cargo fmt --check`, core clippy, core tests, the desktop frontend build, desktop clippy, and desktop `cargo test`. It does **not** run the Vitest suite; run `cd savesync-desktop && npm test` separately.
