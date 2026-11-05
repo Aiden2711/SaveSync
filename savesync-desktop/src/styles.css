@@ -488,17 +488,29 @@ select {
     border-color var(--dur-fast) var(--ease);
 }
 
-.nav-btn:hover:not(:disabled) {
+/*
+ * Hover belongs to undecided destinations only. The old selector's
+ * `:not(:disabled)` made it 0,3,0 and outranked the 0,2,0 current rule, so a
+ * resting pointer on the selected item swapped its --surface-2 well for the
+ * lighter --surface lift — the current page then read as an unselected hover.
+ */
+.nav-btn:hover:not(:disabled):not([aria-current="page"]) {
   border-color: transparent;
   background: var(--surface);
   color: var(--ink);
 }
 
-/* Current destination: a well, never an accent border. */
+/*
+ * Current destination: the --surface-2 well, plus weight and a hairline frame,
+ * so selection still reads at a glance beside a saturated decorative badge.
+ * The 1px border is already reserved (transparent) on `.nav-btn`, so the frame
+ * paints inside the existing box and nothing shifts.
+ */
 .nav-btn[aria-current="page"] {
-  border-color: transparent;
+  border-color: var(--line);
   background: var(--surface-2);
   color: var(--ink);
+  font-weight: 600;
 }
 
 .nav-btn:focus-visible {
