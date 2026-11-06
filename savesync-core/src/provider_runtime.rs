@@ -63,10 +63,15 @@ pub const REDACTED: &str = "[redacted]";
 /// Matched case-insensitively against the text itself, so a vendor error body
 /// that echoes the offending form or query string is scrubbed before the error
 /// reaches a log, a panic message, or the UI.
-const SECRET_KEY_PREFIXES: [&str; 8] = [
+const SECRET_KEY_PREFIXES: [&str; 9] = [
     "refresh_token=",
     "access_token=",
     "client_secret=",
+    // The Twitch client-credentials grant carries both the client id and the
+    // secret in the token URL. The secret is the credential; the id identifies
+    // the application, so both are scrubbed rather than leaving half of an
+    // application identity in a log line.
+    "client_id=",
     "code_verifier=",
     // ScreenScraper carries both the application credentials (`devid` /
     // `devpassword`) and the optional end-user account (`ssid` /
@@ -203,6 +208,15 @@ pub enum ProviderFlavor {
     /// `200` JSON payloads; [`has_quota_signature`] is public so that path can
     /// reuse the same vocabulary.
     ScreenScraper,
+    /// The IGDB / Twitch API.
+    ///
+    /// `429` and `5xx` are transient by status. Bad or expired credentials are
+    /// `401`; the provider itself performs a single forced token refresh and
+    /// replay, so a `401` is never retried by the status classifier. Twitch's
+    /// throttling body is a small JSON object (`{"status":429,…}`) or plain
+    /// text, and a `403` that carries it is retried instead of being read as a
+    /// permission failure.
+    Igdb,
 }
 
 /// How one HTTP response is treated at the provider boundary.
@@ -347,6 +361,23 @@ pub fn has_quota_signature(body: &[u8], flavor: ProviderFlavor) -> bool {
             .iter()
             .any(|needle| text.contains(needle))
         }
+        // Twitch throttles with `429` (already transient) and a small JSON body
+        // such as `{"status":429,"message":"Too many requests"}`, or plain text.
+        // A `403` carrying that signature is throttling, not a permission
+        // failure.
+        ProviderFlavor::Igdb => {
+            let text = String::from_utf8_lossy(body).to_lowercase();
+            [
+                "rate limit",
+                "rate_limit",
+                "too many requests",
+                "daily limit",
+                "\"status\":429",
+                "\"status\": 429",
+            ]
+            .iter()
+            .any(|needle| text.contains(needle))
+        }
     }
 }
 
@@ -428,6 +459,7 @@ mod tests {
             ProviderFlavor::Dropbox,
             ProviderFlavor::SteamStore,
             ProviderFlavor::ScreenScraper,
+            ProviderFlavor::Igdb,
         ] {
             assert_eq!(classify_status(200, b"", flavor), StatusClass::Success);
             assert_eq!(classify_status(204, b"", flavor), StatusClass::Success);
@@ -504,6 +536,22 @@ mod tests {
             ),
             StatusClass::Auth
         );
+
+        // Twitch reports throttling with a `429` status and a JSON body; a
+        // `403` that repeats the signature is throttling too, while a bare
+        // `403` stays a credential failure.
+        assert_eq!(
+            classify_status(
+                403,
+                br#"{"status":429,"message":"Too many requests"}"#,
+                ProviderFlavor::Igdb
+            ),
+            StatusClass::Transient
+        );
+        assert_eq!(
+            classify_status(403, b"forbidden", ProviderFlavor::Igdb),
+            StatusClass::Auth
+        );
     }
 
     #[test]
@@ -538,6 +586,9 @@ mod tests {
             ("refresh_token=rt-secret", "rt-secret"),
             ("ACCESS_TOKEN=at-secret", "at-secret"),
             ("client_secret=cs-secret", "cs-secret"),
+            // The Twitch client-credentials grant carries both values in the
+            // token URL.
+            ("client_id=tv-client-id", "tv-client-id"),
             ("code_verifier=cv-secret", "cv-secret"),
             // ScreenScraper credentials travel in the query string.
             ("devid=dev-secret", "dev-secret"),

@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::http::ReqwestTransport;
+use crate::igdb_metadata::{IgdbCredentials, IgdbProvider};
 use crate::screenscraper_metadata::{ScreenScraperCredentials, ScreenScraperProvider};
 use crate::steam_metadata::SteamMetadataProvider;
 
@@ -130,27 +131,84 @@ pub trait MetadataProvider: Send + Sync {
     fn details(&self, source_id: &str) -> Result<GameMetadata>;
 }
 
+/// Optional credentials for the sources that need them.
+///
+/// Credentialed sources keep growing, and a positional argument list would make
+/// every new provider a breaking change for every caller. This bundle names what
+/// it carries instead: a caller passes only the source's own entry and leaves
+/// the rest `None`.
+///
+/// The bundle borrows; nothing here is stored, and each provider clones what it
+/// needs for the lifetime of one fetch. `Debug` is derived only because the
+/// credential types redact themselves — it renders `Some`/`None`, never a
+/// secret.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MetadataCreds<'a> {
+    /// ScreenScraper developer credentials.
+    pub screenscraper: Option<&'a ScreenScraperCredentials>,
+    /// Twitch application credentials for IGDB.
+    pub igdb: Option<&'a IgdbCredentials>,
+}
+
+impl<'a> MetadataCreds<'a> {
+    /// A bundle holding ScreenScraper credentials only.
+    pub fn screenscraper(credentials: Option<&'a ScreenScraperCredentials>) -> Self {
+        Self {
+            screenscraper: credentials,
+            igdb: None,
+        }
+    }
+
+    /// A bundle holding IGDB credentials only.
+    pub fn igdb(credentials: Option<&'a IgdbCredentials>) -> Self {
+        Self {
+            screenscraper: None,
+            igdb: credentials,
+        }
+    }
+
+    /// Attach IGDB credentials to an existing bundle.
+    pub fn with_igdb(mut self, credentials: Option<&'a IgdbCredentials>) -> Self {
+        self.igdb = credentials;
+        self
+    }
+}
+
 /// Build the production provider for a source that needs no credentials.
 ///
-/// This is [`provider_for_with`] with no credentials, kept so every existing
-/// caller is unchanged: Steam behaves exactly as before, and a credentialed
-/// source fails with [`Error::Auth`] instead of silently searching without the
-/// credentials it needs.
+/// This is [`provider_for_with_creds`] with an empty [`MetadataCreds`], kept so
+/// every existing caller is unchanged: Steam behaves exactly as before, and a
+/// credentialed source fails with [`Error::Auth`] instead of silently searching
+/// without the credentials it needs.
 ///
 /// `cache_dir` may be `None` for a provider that keeps its search index in
 /// memory only (tests).
 ///
-/// Sources that have no implementation yet fail with [`Error::NotFound`]
-/// rather than silently falling back to another provider.
+/// Sources that have no implementation fail with [`Error::NotFound`] rather
+/// than silently falling back to another provider.
 pub fn provider_for(
     source: MetadataSource,
     cache_dir: Option<&Path>,
 ) -> Result<Box<dyn MetadataProvider>> {
-    provider_for_with(source, cache_dir, None)
+    provider_for_with_creds(source, cache_dir, MetadataCreds::default())
 }
 
 /// Build the production provider for `source`, passing caller-supplied
-/// credentials when the source needs them.
+/// ScreenScraper credentials when the source needs them.
+///
+/// The historical three-argument form, kept so existing callers (the desktop
+/// command layer, the engine) compile unchanged. Any other credentialed source
+/// goes through [`provider_for_with_creds`].
+pub fn provider_for_with(
+    source: MetadataSource,
+    cache_dir: Option<&Path>,
+    credentials: Option<&ScreenScraperCredentials>,
+) -> Result<Box<dyn MetadataProvider>> {
+    provider_for_with_creds(source, cache_dir, MetadataCreds::screenscraper(credentials))
+}
+
+/// Build the production provider for `source`, passing whichever credentials it
+/// needs.
 ///
 /// The registry counterpart of [`crate::adapters::adapter_for`], with one
 /// deliberate difference: a provider needs a transport (and, for Steam, a cache
@@ -158,12 +216,12 @@ pub fn provider_for(
 /// instead of returning a `'static` value.
 ///
 /// Credentials are never stored by core: they are cloned into the returned
-/// provider and dropped with it. A credentialed source without credentials is
-/// [`Error::Auth`]; Steam ignores the parameter, so it stays keyless.
-pub fn provider_for_with(
+/// provider and dropped with it. A credentialed source without its credentials
+/// is [`Error::Auth`]; Steam ignores them, so it stays keyless.
+pub fn provider_for_with_creds(
     source: MetadataSource,
     cache_dir: Option<&Path>,
-    credentials: Option<&ScreenScraperCredentials>,
+    credentials: MetadataCreds<'_>,
 ) -> Result<Box<dyn MetadataProvider>> {
     match source {
         MetadataSource::Steam => {
@@ -176,7 +234,7 @@ pub fn provider_for_with(
             }))
         }
         MetadataSource::ScreenScraper => {
-            let credentials = credentials.ok_or_else(|| {
+            let credentials = credentials.screenscraper.ok_or_else(|| {
                 Error::Auth(format!(
                     "{source} requires caller-supplied developer credentials"
                 ))
@@ -187,9 +245,18 @@ pub fn provider_for_with(
                 credentials.clone(),
             )?))
         }
-        MetadataSource::Igdb => Err(Error::NotFound(format!(
-            "no metadata provider is configured for {source}"
-        ))),
+        MetadataSource::Igdb => {
+            let credentials = credentials.igdb.ok_or_else(|| {
+                Error::Auth(format!(
+                    "{source} requires caller-supplied Twitch client credentials"
+                ))
+            })?;
+            let transport = ReqwestTransport::default();
+            Ok(Box::new(IgdbProvider::new(
+                std::sync::Arc::new(transport),
+                credentials.clone(),
+            )?))
+        }
     }
 }
 
@@ -358,12 +425,17 @@ mod tests {
     }
 
     #[test]
-    fn unimplemented_sources_do_not_silently_fall_back() {
-        let error = provider_for(MetadataSource::Igdb, None)
-            .err()
-            .expect("no provider yet");
-        assert!(matches!(error, Error::NotFound(_)));
-        assert!(error.to_string().contains("igdb"));
+    fn credentialled_sources_do_not_silently_fall_back() {
+        for source in [MetadataSource::ScreenScraper, MetadataSource::Igdb] {
+            let error = provider_for(source, None)
+                .err()
+                .expect("credentials are required");
+            assert!(matches!(error, Error::Auth(_)), "{error:?}");
+            assert!(
+                error.to_string().contains(source.as_str()),
+                "the error names the source: {error}"
+            );
+        }
     }
 
     #[test]
@@ -378,5 +450,17 @@ mod tests {
         let provider =
             provider_for_with(MetadataSource::ScreenScraper, None, Some(&credentials)).unwrap();
         assert_eq!(provider.source(), MetadataSource::ScreenScraper);
+
+        // IGDB goes through the credential bundle; the historical
+        // three-argument form deliberately cannot supply its credentials.
+        let igdb = IgdbCredentials::new("client-id", "client-secret");
+        let provider =
+            provider_for_with_creds(MetadataSource::Igdb, None, MetadataCreds::igdb(Some(&igdb)))
+                .unwrap();
+        assert_eq!(provider.source(), MetadataSource::Igdb);
+        assert!(matches!(
+            provider_for_with(MetadataSource::Igdb, None, Some(&credentials)),
+            Err(Error::Auth(_))
+        ));
     }
 }

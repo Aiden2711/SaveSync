@@ -15,7 +15,7 @@ use crate::blob::BlobStore;
 use crate::db::Db;
 use crate::error::{Error, Result};
 use crate::manifest::{Manifest, ManifestDiff};
-use crate::metadata::{self, GameMetadata, MetadataProvider, MetadataSource};
+use crate::metadata::{self, GameMetadata, MetadataCreds, MetadataProvider, MetadataSource};
 use crate::models::{
     AdapterType, Conflict, Device, Game, Location, LocationKind, RestoreJournalEntry,
     RestoreReport, Revision, SnapshotInfo,
@@ -479,14 +479,36 @@ impl SaveSyncEngine {
     /// call. Core never stores or logs them. [`Self::fetch_metadata`] is this
     /// method with no credentials, so keyless sources keep their exact
     /// behaviour.
+    ///
+    /// This is the ScreenScraper-shaped entry point; a source with a different
+    /// credential type goes through [`Self::fetch_metadata_with_all_creds`].
     pub fn fetch_metadata_with_creds(
         &mut self,
         game_id: &str,
         source: MetadataSource,
         credentials: Option<&ScreenScraperCredentials>,
     ) -> Result<GameMetadata> {
+        self.fetch_metadata_with_all_creds(
+            game_id,
+            source,
+            MetadataCreds::screenscraper(credentials),
+        )
+    }
+
+    /// Fetch metadata from any credentialed source.
+    ///
+    /// The credentials are cloned into the provider built for this one call and
+    /// are never stored, logged, or written to the database.
+    /// [`Self::fetch_metadata_with_creds`] is this method with ScreenScraper
+    /// credentials only, so existing callers keep their exact behaviour.
+    pub fn fetch_metadata_with_all_creds(
+        &mut self,
+        game_id: &str,
+        source: MetadataSource,
+        credentials: MetadataCreds<'_>,
+    ) -> Result<GameMetadata> {
         let provider =
-            metadata::provider_for_with(source, Some(&self.paths.metadata()), credentials)?;
+            metadata::provider_for_with_creds(source, Some(&self.paths.metadata()), credentials)?;
         self.fetch_metadata_with(provider.as_ref(), game_id)
     }
 

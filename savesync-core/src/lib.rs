@@ -31,6 +31,7 @@ pub mod error;
 pub mod google_drive;
 pub mod hash;
 pub mod http;
+pub mod igdb_metadata;
 pub mod manifest;
 pub mod metadata;
 pub mod models;
@@ -62,10 +63,11 @@ pub use engine::{CoverSearch, GRID_UNAVAILABLE_MESSAGE, SaveSyncEngine};
 pub use error::{Error, Result};
 pub use google_drive::GoogleDriveProvider;
 pub use http::{HttpTransport, ReqwestTransport, RetryPolicy};
+pub use igdb_metadata::{IgdbCredentials, IgdbProvider};
 pub use manifest::{FileEntry, Manifest, ManifestDiff};
 pub use metadata::{
-    GameMetadata, MetadataCandidate, MetadataProvider, MetadataSource, best_candidate,
-    normalize_title, provider_for, provider_for_with,
+    GameMetadata, MetadataCandidate, MetadataCreds, MetadataProvider, MetadataSource,
+    best_candidate, normalize_title, provider_for, provider_for_with, provider_for_with_creds,
 };
 pub use models::{
     AdapterType, Conflict, Device, Game, Location, LocationKind, RestoreJournalEntry,

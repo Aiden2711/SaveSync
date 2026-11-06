@@ -183,12 +183,16 @@ impl HttpRequest {
 }
 
 /// Header names whose values are credentials or credential-bearing arguments.
-const SENSITIVE_HEADERS: [&str; 5] = [
+///
+/// `client-id` is the Twitch/IGDB application identifier: it is only useful
+/// together with the client secret, so it is redacted alongside it.
+const SENSITIVE_HEADERS: [&str; 6] = [
     "authorization",
     "proxy-authorization",
     "cookie",
     "set-cookie",
     "dropbox-api-arg",
+    "client-id",
 ];
 
 fn is_sensitive_header(name: &str) -> bool {
