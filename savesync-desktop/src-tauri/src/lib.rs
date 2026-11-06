@@ -13,10 +13,10 @@ use std::time::Duration;
 
 use savesync_core::{
     AdapterType, Conflict, CoverSearch, DROPBOX_ACCOUNT, DiscoveredGame, DropboxProvider,
-    GRID_UNAVAILABLE_MESSAGE, Game, GoogleDriveProvider, GridKind, HttpTransport,
-    KeyringTokenStore, MemoryTokenStore, OAuthConfig, OAuthFlow, ReqwestTransport, RestoreReport,
-    Revision, SaveSyncEngine, SaveWatcher, SnapshotInfo, SteamGridDbClient, SyncReport, TokenStore,
-    WEBDAV_ACCOUNT, WebDavProvider,
+    GRID_UNAVAILABLE_MESSAGE, Game, GameMetadata, GoogleDriveProvider, GridKind, HttpTransport,
+    KeyringTokenStore, MemoryTokenStore, MetadataSource, OAuthConfig, OAuthFlow, ReqwestTransport,
+    RestoreReport, Revision, SaveSyncEngine, SaveWatcher, ScreenScraperCredentials, SnapshotInfo,
+    SteamGridDbClient, SyncReport, TokenStore, WEBDAV_ACCOUNT, WebDavProvider, provider_for_with,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -31,6 +31,21 @@ const DROPBOX_APP_KEY_SETTING: &str = "dropbox.app_key";
 const WEBDAV_ENDPOINT_SETTING: &str = "webdav.endpoint";
 const WEBDAV_USERNAME_SETTING: &str = "webdav.username";
 const ACTIVE_PROVIDER_SETTING: &str = "active_provider";
+
+/// Keyring accounts for the four ScreenScraper values.
+///
+/// Each field is its own entry so a partial update (change the developer
+/// password but keep the user account) can never overwrite a value it does not
+/// own. All four live under the shared `savesync` service, beside the other
+/// provider credentials. ScreenScraper has no non-secret configuration, so
+/// nothing about it belongs in the settings table.
+const SCREENSCRAPER_DEV_ID_ACCOUNT: &str = "screenscraper-dev-id";
+const SCREENSCRAPER_DEV_PASSWORD_ACCOUNT: &str = "screenscraper-dev-password";
+const SCREENSCRAPER_USER_SSID_ACCOUNT: &str = "screenscraper-user-ssid";
+const SCREENSCRAPER_USER_SSPASSWORD_ACCOUNT: &str = "screenscraper-user-sspassword";
+/// Bound on untrusted IPC input so a pathological payload cannot be pushed into
+/// the OS keyring. The real values are short ids and passwords.
+const SCREENSCRAPER_VALUE_MAX_LEN: usize = 256;
 
 const OAUTH_TIMEOUT: Duration = Duration::from_secs(300);
 /// Cover-art downloads are bounded by the transport, not left to hang.
@@ -69,6 +84,13 @@ struct Inner {
     /// WebDAV HTTP Basic password. Also a separate keyring item; the endpoint
     /// and username are non-secret and live in the settings table.
     webdav_credentials: Arc<dyn TokenStore>,
+    /// ScreenScraper developer id and password, plus the optional end-user
+    /// account. One keyring item per field: a partial update must be able to
+    /// keep the values the user did not retype.
+    screenscraper_dev_id: Arc<dyn TokenStore>,
+    screenscraper_dev_password: Arc<dyn TokenStore>,
+    screenscraper_user_ssid: Arc<dyn TokenStore>,
+    screenscraper_user_sspassword: Arc<dyn TokenStore>,
     transport: Arc<dyn HttpTransport>,
     client_id: Mutex<Option<String>>,
     oauth: Mutex<OAuthRuntime>,
@@ -167,6 +189,19 @@ struct GoogleStatus {
 #[derive(Debug, Serialize)]
 struct ArtworkStatus {
     configured: bool,
+}
+
+/// Which ScreenScraper credential pairs are stored in the OS keyring.
+///
+/// Flags only: no part of a credential — not even its length — is ever sent
+/// across IPC, logged, or stored in SQLite. `configured` reports whether
+/// ScreenScraper can be used at all (the developer pair is the minimum), while
+/// the two per-pair flags let the settings form show what is already saved.
+#[derive(Debug, Default, Serialize)]
+struct ScreenScraperStatus {
+    configured: bool,
+    dev_configured: bool,
+    user_configured: bool,
 }
 
 #[derive(Serialize)]
@@ -561,11 +596,15 @@ fn open_auth_url(url: String) -> Result<(), String> {
 /// The Rust side is the only place that decides what the OS browser may be
 /// asked to open, so this is an exact-match allow-list rather than a host
 /// check: a note can only reach the page it was written for.
-const DOCS_URLS: [&str; 4] = [
+const DOCS_URLS: [&str; 6] = [
     "https://www.steamgriddb.com/profile/preferences/api",
     "https://console.cloud.google.com/apis/credentials",
     "https://www.dropbox.com/developers/apps",
     "https://docs.nextcloud.com/server/latest/user_manual/en/session_management.html#managing-devices",
+    // Where a ScreenScraper applicant asks for developer credentials, and where
+    // an end user creates the account that raises the request quota.
+    "https://www.screenscraper.fr/forumsujets.php?frub=12",
+    "https://www.screenscraper.fr/membreinscription.php",
 ];
 
 /// Whether `url` is one of the documented help pages.
@@ -1178,6 +1217,413 @@ fn clear_steamgriddb_api_key(state: tauri::State<'_, AppState>) -> Result<Artwor
     remove_steamgriddb_api_key(state.inner.artwork_credentials.as_ref())
 }
 
+/// The four ScreenScraper values as they are stored right now.
+///
+/// Held only for the duration of one command: it exists so a write can roll back
+/// to exactly the previous values and so status can be derived without a second
+/// keyring round-trip. It never derives `Serialize`, so it cannot be sent across
+/// IPC, and its `Debug` is written by hand below to print presence flags only:
+/// a derived one would put every credential value in a log line or a panic
+/// message.
+#[derive(Default)]
+struct StoredScreenScraper {
+    dev_id: Option<String>,
+    dev_password: Option<String>,
+    ssid: Option<String>,
+    sspassword: Option<String>,
+}
+
+impl std::fmt::Debug for StoredScreenScraper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Presence only. Never the value, and never its length.
+        f.debug_struct("StoredScreenScraper")
+            .field("dev_id", &self.dev_id.is_some())
+            .field("dev_password", &self.dev_password.is_some())
+            .field("ssid", &self.ssid.is_some())
+            .field("sspassword", &self.sspassword.is_some())
+            .finish()
+    }
+}
+
+impl StoredScreenScraper {
+    /// Build provider credentials, or `None` when the required developer pair is
+    /// incomplete.
+    ///
+    /// An incomplete user account is dropped instead of sent: core rejects a half
+    /// pair, and a partial pair would otherwise fail every fetch. That state is
+    /// only reachable after an interrupted write, so the warning the write
+    /// returned is what the user acts on.
+    fn credentials(&self) -> Option<ScreenScraperCredentials> {
+        let (dev_id, dev_password) = (self.dev_id.as_deref()?, self.dev_password.as_deref()?);
+        let mut credentials = ScreenScraperCredentials::developer(dev_id, dev_password);
+        if let (Some(ssid), Some(sspassword)) = (self.ssid.as_deref(), self.sspassword.as_deref()) {
+            credentials = credentials.with_user(ssid, sspassword);
+        }
+        Some(credentials)
+    }
+}
+
+impl ScreenScraperStatus {
+    fn from_stored(stored: &StoredScreenScraper) -> Self {
+        let dev_configured = stored.dev_id.is_some() && stored.dev_password.is_some();
+        let user_configured = stored.ssid.is_some() && stored.sspassword.is_some();
+        Self {
+            // The developer pair is the minimum ScreenScraper needs; the user
+            // account only raises the request quota.
+            configured: dev_configured,
+            dev_configured,
+            user_configured,
+        }
+    }
+}
+
+/// Read one ScreenScraper keyring entry.
+///
+/// The keyring error is discarded rather than forwarded: it is not guaranteed
+/// secret-free, and the caller only ever shows a generic message.
+fn load_screenscraper_secret(
+    store: &dyn TokenStore,
+    label: &str,
+) -> Result<Option<String>, String> {
+    store
+        .load()
+        .map_err(|_| format!("Could not read the ScreenScraper {label} from the OS keyring."))
+}
+
+/// A typed field wins; a blank one keeps the stored value.
+///
+/// This is what lets a user change only the developer password, or only the user
+/// account, without retyping — and without the UI ever having to hold a stored
+/// secret to send it back.
+fn effective_secret(typed: &str, stored: Option<String>) -> Option<String> {
+    let typed = typed.trim();
+    if typed.is_empty() {
+        stored
+    } else {
+        Some(typed.to_string())
+    }
+}
+
+/// Apply the partial-pair semantics to one submitted credential form.
+///
+/// Every blank field keeps its stored value; the result is then checked for the
+/// two mistakes a user actually makes. Both messages are the friendly text the
+/// settings form shows and deliberately contain no credential value.
+fn resolve_screenscraper_credentials(
+    stored: &StoredScreenScraper,
+    dev_id: &str,
+    dev_password: &str,
+    ssid: &str,
+    sspassword: &str,
+) -> Result<StoredScreenScraper, String> {
+    let next = StoredScreenScraper {
+        dev_id: effective_secret(dev_id, stored.dev_id.clone()),
+        dev_password: effective_secret(dev_password, stored.dev_password.clone()),
+        ssid: effective_secret(ssid, stored.ssid.clone()),
+        sspassword: effective_secret(sspassword, stored.sspassword.clone()),
+    };
+
+    if next.dev_id.is_none() || next.dev_password.is_none() {
+        return Err("Enter the ScreenScraper dev id and dev password.".into());
+    }
+    // The user account is optional, but half of one is a configuration error:
+    // ScreenScraper rejects an SSID without its password.
+    if next.ssid.is_some() != next.sspassword.is_some() {
+        return Err("Enter both the ScreenScraper user SSID and user SS password.".into());
+    }
+
+    let values = [
+        next.dev_id.as_ref(),
+        next.dev_password.as_ref(),
+        next.ssid.as_ref(),
+        next.sspassword.as_ref(),
+    ];
+    if values
+        .into_iter()
+        .flatten()
+        .any(|value| value.chars().count() > SCREENSCRAPER_VALUE_MAX_LEN)
+    {
+        return Err(format!(
+            "ScreenScraper credentials may be at most {SCREENSCRAPER_VALUE_MAX_LEN} characters."
+        ));
+    }
+
+    Ok(next)
+}
+
+/// Reject a credential set core would reject, before anything is persisted.
+///
+/// Validation only, exactly like [`set_webdav_config`]: the provider is built and
+/// dropped immediately. Core's `Auth` errors describe the shape of the credential
+/// set and never echo a value.
+fn validate_screenscraper_credentials(
+    credentials: &ScreenScraperCredentials,
+) -> Result<(), String> {
+    provider_for_with(MetadataSource::ScreenScraper, None, Some(credentials))
+        .map(|_| ())
+        .map_err(stringify)
+}
+
+/// One keyring entry, the value it held, and the value to write.
+///
+/// `next: None` means "remove this entry", so the same list covers both setting
+/// and clearing the credentials.
+type SecretChange<'a> = (&'a dyn TokenStore, Option<String>, Option<String>);
+
+/// Restore the prior state of every keyring entry a failed write replaced.
+///
+/// A previously-present value is written back; a previously-absent entry is
+/// deleted, because leaving the new value behind would persist half of a
+/// credential set that never completed. `Err(())` means at least one restore
+/// failed and the caller must say so instead of reporting a clean failure.
+fn restore_secrets(changes: &[SecretChange<'_>]) -> Result<(), ()> {
+    let mut complete = true;
+    for (store, prior, _) in changes {
+        let restored = match prior {
+            Some(prior) => store.save(prior).is_ok(),
+            None => store.delete().is_ok(),
+        };
+        complete &= restored;
+    }
+    if complete { Ok(()) } else { Err(()) }
+}
+
+/// Persist the ScreenScraper credential fields, restoring every entry a failure
+/// left changed.
+///
+/// Each field is its own keyring item, so a failure halfway through would
+/// otherwise leave a new developer password next to the old developer id. Every
+/// error is the same generic message plus, only when the rollback itself failed,
+/// the shared [`ROLLBACK_INCOMPLETE_HINT`]; no branch can echo a value.
+fn persist_screenscraper_credentials(changes: &[SecretChange<'_>]) -> Result<(), String> {
+    // Entries that have to be undone if a later write fails.
+    let mut applied: Vec<SecretChange<'_>> = Vec::new();
+    for (store, prior, next) in changes {
+        // A blank field resolved back to what is already stored; rewriting an
+        // identical value only touches the OS credential store for nothing.
+        if prior.as_deref() == next.as_deref() {
+            continue;
+        }
+        let written = match next {
+            Some(value) => store.save(value),
+            None => store.delete(),
+        };
+        // The failing entry is restored too: an OS credential backend can leave
+        // the new value stored (or the old one deleted) and *then* report an
+        // error, so "it failed" does not mean "it did not change".
+        applied.push((*store, prior.clone(), next.clone()));
+        if written.is_err() {
+            return Err(persist_error(
+                "Could not save the ScreenScraper credentials to the OS keyring.".to_string(),
+                restore_secrets(&applied),
+            ));
+        }
+    }
+    Ok(())
+}
+
+impl Inner {
+    /// Every stored ScreenScraper value, read once per command.
+    fn stored_screenscraper(&self) -> Result<StoredScreenScraper, String> {
+        Ok(StoredScreenScraper {
+            dev_id: load_screenscraper_secret(self.screenscraper_dev_id.as_ref(), "dev id")?,
+            dev_password: load_screenscraper_secret(
+                self.screenscraper_dev_password.as_ref(),
+                "dev password",
+            )?,
+            ssid: load_screenscraper_secret(self.screenscraper_user_ssid.as_ref(), "user SSID")?,
+            sspassword: load_screenscraper_secret(
+                self.screenscraper_user_sspassword.as_ref(),
+                "user SS password",
+            )?,
+        })
+    }
+
+    fn screenscraper_status(&self) -> Result<ScreenScraperStatus, String> {
+        Ok(ScreenScraperStatus::from_stored(
+            &self.stored_screenscraper()?,
+        ))
+    }
+
+    fn screenscraper_credentials(&self) -> Result<Option<ScreenScraperCredentials>, String> {
+        Ok(self.stored_screenscraper()?.credentials())
+    }
+
+    /// Fetch and cache metadata for one game.
+    ///
+    /// Called from a blocking task: the provider performs blocking network I/O.
+    /// Nothing on the snapshot, restore, or sync path calls this, so a slow or
+    /// unreachable metadata service can never delay save-data work.
+    fn fetch_game_metadata(
+        &self,
+        game_id: &str,
+        source: Option<&str>,
+    ) -> Result<GameMetadata, String> {
+        let requested = match source {
+            Some(raw) => Some(MetadataSource::parse(raw.trim()).ok_or_else(|| {
+                // An unknown source is rejected rather than coerced, so a bad
+                // request cannot quietly fetch from a different provider.
+                format!("Unknown metadata source \"{}\".", raw.trim())
+            })?),
+            None => None,
+        };
+
+        let (source, credentials) = match requested {
+            // Steam is keyless, so the keyring is not consulted at all.
+            Some(MetadataSource::Steam) => (MetadataSource::Steam, None),
+            Some(MetadataSource::ScreenScraper) => (
+                MetadataSource::ScreenScraper,
+                self.screenscraper_credentials()?,
+            ),
+            Some(other) => (other, None),
+            // No source asked for: use ScreenScraper once it is configured and
+            // the keyless Steam Store otherwise. An unreadable keyring degrades
+            // to Steam instead of failing a fetch that needs no credential.
+            None => match self.screenscraper_credentials() {
+                Ok(Some(credentials)) => (MetadataSource::ScreenScraper, Some(credentials)),
+                Ok(None) | Err(_) => (MetadataSource::Steam, None),
+            },
+        };
+
+        let mut engine = self.engine.lock().map_err(lock_error)?;
+        engine
+            .fetch_metadata_with_creds(game_id, source, credentials.as_ref())
+            .map_err(|error| metadata_fetch_error(&error))
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn fetch_game_metadata(
+    state: tauri::State<'_, AppState>,
+    game_id: String,
+    source: Option<String>,
+) -> Result<GameMetadata, String> {
+    let inner = state.inner.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        inner.fetch_game_metadata(&game_id, source.as_deref())
+    })
+    .await
+    .map_err(|error| format!("metadata task failed: {error}"))?
+}
+
+/// Read a game's cached metadata. No network request is made, so the detail view
+/// can render offline.
+#[tauri::command(rename_all = "snake_case")]
+fn game_metadata(
+    state: tauri::State<'_, AppState>,
+    game_id: String,
+) -> Result<Option<GameMetadata>, String> {
+    let engine = state.inner.engine.lock().map_err(lock_error)?;
+    engine
+        .cached_metadata(&game_id)
+        // Generic: the underlying failure can name a database path.
+        .map_err(|_| "Could not read the saved metadata for this game.".to_string())
+}
+
+/// Store the ScreenScraper credentials in the OS keyring.
+///
+/// A blank field keeps the stored value, so adjusting one field never requires
+/// holding the others. The candidate set is validated by building a provider
+/// before anything is written; if a write still fails, every entry it replaced is
+/// restored.
+#[tauri::command(rename_all = "snake_case")]
+fn set_screenscraper_credentials(
+    state: tauri::State<'_, AppState>,
+    dev_id: String,
+    dev_password: String,
+    ssid: String,
+    sspassword: String,
+) -> Result<ScreenScraperStatus, String> {
+    let inner = &*state.inner;
+    let stored = inner.stored_screenscraper()?;
+    let next =
+        resolve_screenscraper_credentials(&stored, &dev_id, &dev_password, &ssid, &sspassword)?;
+
+    let credentials = next.credentials().ok_or_else(|| {
+        // Unreachable: `resolve` already rejected an incomplete developer pair.
+        "Enter the ScreenScraper dev id and dev password.".to_string()
+    })?;
+    validate_screenscraper_credentials(&credentials)?;
+
+    persist_screenscraper_credentials(&[
+        (
+            inner.screenscraper_dev_id.as_ref(),
+            stored.dev_id,
+            next.dev_id.clone(),
+        ),
+        (
+            inner.screenscraper_dev_password.as_ref(),
+            stored.dev_password,
+            next.dev_password.clone(),
+        ),
+        (
+            inner.screenscraper_user_ssid.as_ref(),
+            stored.ssid,
+            next.ssid.clone(),
+        ),
+        (
+            inner.screenscraper_user_sspassword.as_ref(),
+            stored.sspassword,
+            next.sspassword.clone(),
+        ),
+    ])?;
+
+    // Derived from what was just persisted: another keyring read could fail
+    // after a successful write and report a contradiction.
+    Ok(ScreenScraperStatus::from_stored(&next))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn screenscraper_status(state: tauri::State<'_, AppState>) -> Result<ScreenScraperStatus, String> {
+    state.inner.screenscraper_status()
+}
+
+/// Remove every ScreenScraper credential. The game metadata already cached stays
+/// cached: it is a copy of public catalogue data, not a credential.
+#[tauri::command(rename_all = "snake_case")]
+fn clear_screenscraper_credentials(
+    state: tauri::State<'_, AppState>,
+) -> Result<ScreenScraperStatus, String> {
+    let inner = &*state.inner;
+    let stored = inner.stored_screenscraper()?;
+    persist_screenscraper_credentials(&[
+        (inner.screenscraper_dev_id.as_ref(), stored.dev_id, None),
+        (
+            inner.screenscraper_dev_password.as_ref(),
+            stored.dev_password,
+            None,
+        ),
+        (inner.screenscraper_user_ssid.as_ref(), stored.ssid, None),
+        (
+            inner.screenscraper_user_sspassword.as_ref(),
+            stored.sspassword,
+            None,
+        ),
+    ])?;
+    Ok(ScreenScraperStatus::default())
+}
+
+/// Map a metadata error to user-facing text without forwarding internals.
+///
+/// The error `Display` implementation is never used: it can carry endpoint URLs,
+/// response bodies, and server messages, and an `Auth` failure is raised from a
+/// credential check. Only the class of failure is exposed.
+fn metadata_fetch_error(error: &savesync_core::Error) -> String {
+    match error {
+        savesync_core::Error::Auth(_) => {
+            "ScreenScraper rejected the saved credentials. Check the developer credentials and, if one is saved, the user account.".to_string()
+        }
+        savesync_core::Error::NotFound(_) => {
+            "No metadata found for this game from the selected source.".to_string()
+        }
+        savesync_core::Error::Network(_) => {
+            "Could not reach the metadata service. Check your connection and try again."
+                .to_string()
+        }
+        _ => "Could not fetch metadata for this game.".to_string(),
+    }
+}
+
 /// Fetch and cache cover art for a game, then return the updated record.
 ///
 /// The API key is read from the keyring inside the blocking task and is never
@@ -1753,6 +2199,41 @@ pub fn run() {
                     WEBDAV_ACCOUNT,
                 ))
             };
+            // ScreenScraper keeps one keyring item per field so a partial update
+            // cannot overwrite a value the user did not retype. All four are
+            // secrets, so they follow the same policy as every other credential.
+            let screenscraper_dev_id: Arc<dyn TokenStore> = if memory_tokens {
+                Arc::new(MemoryTokenStore::default())
+            } else {
+                Arc::new(KeyringTokenStore::new(
+                    savesync_core::SERVICE,
+                    SCREENSCRAPER_DEV_ID_ACCOUNT,
+                ))
+            };
+            let screenscraper_dev_password: Arc<dyn TokenStore> = if memory_tokens {
+                Arc::new(MemoryTokenStore::default())
+            } else {
+                Arc::new(KeyringTokenStore::new(
+                    savesync_core::SERVICE,
+                    SCREENSCRAPER_DEV_PASSWORD_ACCOUNT,
+                ))
+            };
+            let screenscraper_user_ssid: Arc<dyn TokenStore> = if memory_tokens {
+                Arc::new(MemoryTokenStore::default())
+            } else {
+                Arc::new(KeyringTokenStore::new(
+                    savesync_core::SERVICE,
+                    SCREENSCRAPER_USER_SSID_ACCOUNT,
+                ))
+            };
+            let screenscraper_user_sspassword: Arc<dyn TokenStore> = if memory_tokens {
+                Arc::new(MemoryTokenStore::default())
+            } else {
+                Arc::new(KeyringTokenStore::new(
+                    savesync_core::SERVICE,
+                    SCREENSCRAPER_USER_SSPASSWORD_ACCOUNT,
+                ))
+            };
             let connected = credentials.load().unwrap_or(None).is_some();
             let dropbox_connected = dropbox_credentials.load().unwrap_or(None).is_some();
             let transport: Arc<dyn HttpTransport> = Arc::new(ReqwestTransport::default());
@@ -1789,6 +2270,10 @@ pub fn run() {
                     artwork_credentials,
                     dropbox_credentials,
                     webdav_credentials,
+                    screenscraper_dev_id,
+                    screenscraper_dev_password,
+                    screenscraper_user_ssid,
+                    screenscraper_user_sspassword,
                     transport,
                     client_id: Mutex::new(client_id),
                     oauth: Mutex::new(OAuthRuntime {
@@ -1843,6 +2328,11 @@ pub fn run() {
             set_steamgriddb_api_key,
             steamgriddb_status,
             clear_steamgriddb_api_key,
+            fetch_game_metadata,
+            game_metadata,
+            set_screenscraper_credentials,
+            screenscraper_status,
+            clear_screenscraper_credentials,
             fetch_cover_art,
             search_cover_candidates,
             set_cover_grid,
@@ -2212,12 +2702,37 @@ mod tests {
     }
 
     /// The helper notes hand URLs to the same kind of command, so the docs
-    /// allow-list is exact: only the four documented pages, nothing appended.
+    /// allow-list is exact: only the six documented pages, nothing appended.
     #[test]
     fn open_docs_url_only_accepts_documented_pages() {
         for url in DOCS_URLS {
             assert!(is_allowed_docs_url(url), "{url} should be allowed");
         }
+
+        // The two ScreenScraper pages the credential notes link to.
+        assert!(is_allowed_docs_url(
+            "https://www.screenscraper.fr/forumsujets.php?frub=12"
+        ));
+        assert!(is_allowed_docs_url(
+            "https://www.screenscraper.fr/membreinscription.php"
+        ));
+        // Exact match: the forum index without its topic id is a different page,
+        // and a suffix cannot be appended to the sign-up form.
+        assert!(!is_allowed_docs_url(
+            "https://www.screenscraper.fr/forumsujets.php"
+        ));
+        assert!(!is_allowed_docs_url(
+            "https://www.screenscraper.fr/forumsujets.php?frub=13"
+        ));
+        assert!(!is_allowed_docs_url(
+            "https://www.screenscraper.fr/membreinscription.php?next=/admin"
+        ));
+        assert!(!is_allowed_docs_url(
+            "https://www.screenscraper.fr/membreinscription.php/../../admin"
+        ));
+        assert!(!is_allowed_docs_url(
+            "http://www.screenscraper.fr/membreinscription.php"
+        ));
 
         assert!(!is_allowed_docs_url("https://evil.test/"));
         assert!(!is_allowed_docs_url(
@@ -2697,5 +3212,377 @@ mod tests {
         // the provider now reads as disconnected.
         assert_eq!(credentials.load().unwrap(), None);
         assert_eq!(settings.value(DROPBOX_APP_KEY_SETTING), Some("old-key"));
+    }
+
+    /// A keyring that fails the first save and works afterwards, so a rollback
+    /// write can still land. Like a real backend it drops the prior value before
+    /// reporting the failed write.
+    struct FailFirstSaveStore {
+        token: std::sync::Mutex<Option<String>>,
+        saves: std::sync::Mutex<usize>,
+    }
+
+    impl FailFirstSaveStore {
+        fn new(token: Option<&str>) -> Self {
+            Self {
+                token: std::sync::Mutex::new(token.map(str::to_string)),
+                saves: std::sync::Mutex::new(0),
+            }
+        }
+
+        fn token(&self) -> Option<String> {
+            self.token.lock().expect("token mutex").clone()
+        }
+    }
+
+    impl TokenStore for FailFirstSaveStore {
+        fn load(&self) -> savesync_core::Result<Option<String>> {
+            Ok(self.token())
+        }
+        fn save(&self, token: &str) -> savesync_core::Result<()> {
+            let mut saves = self.saves.lock().expect("saves mutex");
+            *saves += 1;
+            if *saves == 1 {
+                *self.token.lock().expect("token mutex") = None;
+                return Err(savesync_core::Error::Auth(
+                    "keyring payload: dev-sentinel-password".into(),
+                ));
+            }
+            *self.token.lock().expect("token mutex") = Some(token.to_string());
+            Ok(())
+        }
+        fn delete(&self) -> savesync_core::Result<()> {
+            *self.token.lock().expect("token mutex") = None;
+            Ok(())
+        }
+    }
+
+    const DEV_ID_SENTINEL: &str = "dev-id-sentinel";
+    const DEV_PASSWORD_SENTINEL: &str = "dev-password-sentinel";
+
+    /// The status shape crosses IPC, so it must carry flags only. A credential
+    /// field would show up in the JSON body, and so would a value.
+    #[test]
+    fn screenscraper_status_never_serializes_a_secret_field() {
+        let stored = StoredScreenScraper {
+            dev_id: Some(DEV_ID_SENTINEL.into()),
+            dev_password: Some(DEV_PASSWORD_SENTINEL.into()),
+            ssid: Some("user-ssid-sentinel".into()),
+            sspassword: Some("user-sspassword-sentinel".into()),
+        };
+        let status = ScreenScraperStatus::from_stored(&stored);
+        let json = serde_json::to_string(&status).unwrap();
+
+        assert_eq!(
+            json,
+            r#"{"configured":true,"dev_configured":true,"user_configured":true}"#
+        );
+        for forbidden in [
+            DEV_ID_SENTINEL,
+            DEV_PASSWORD_SENTINEL,
+            "user-ssid-sentinel",
+            "user-sspassword-sentinel",
+            "password",
+            "ssid",
+            "secret",
+        ] {
+            assert!(
+                !json.to_lowercase().contains(&forbidden.to_lowercase()),
+                "leaked {forbidden}"
+            );
+        }
+
+        // A half-stored set never reports as configured, and an empty one is
+        // fully false.
+        let partial = ScreenScraperStatus::from_stored(&StoredScreenScraper {
+            dev_id: Some(DEV_ID_SENTINEL.into()),
+            ..StoredScreenScraper::default()
+        });
+        assert!(!partial.configured);
+        assert!(!partial.dev_configured);
+        assert_eq!(
+            serde_json::to_string(&ScreenScraperStatus::default()).unwrap(),
+            r#"{"configured":false,"dev_configured":false,"user_configured":false}"#
+        );
+    }
+
+    /// A blank field keeps the stored value, so changing one credential never
+    /// requires retyping — or holding — the others.
+    #[test]
+    fn blank_screenscraper_fields_keep_the_stored_values() {
+        let stored = StoredScreenScraper {
+            dev_id: Some("stored-dev-id".into()),
+            dev_password: Some("stored-dev-password".into()),
+            ssid: Some("stored-ssid".into()),
+            sspassword: Some("stored-sspassword".into()),
+        };
+
+        // Everything blank: nothing changes.
+        let unchanged =
+            resolve_screenscraper_credentials(&stored, "  ", "", "\t", "").expect("complete set");
+        assert_eq!(unchanged.dev_id.as_deref(), Some("stored-dev-id"));
+        assert_eq!(
+            unchanged.dev_password.as_deref(),
+            Some("stored-dev-password")
+        );
+        assert_eq!(unchanged.ssid.as_deref(), Some("stored-ssid"));
+        assert_eq!(unchanged.sspassword.as_deref(), Some("stored-sspassword"));
+
+        // Only the developer password changes; the typed value is trimmed.
+        let rotated =
+            resolve_screenscraper_credentials(&stored, "", "  new-dev-password  ", "", "")
+                .expect("complete set");
+        assert_eq!(rotated.dev_id.as_deref(), Some("stored-dev-id"));
+        assert_eq!(rotated.dev_password.as_deref(), Some("new-dev-password"));
+        assert_eq!(rotated.ssid.as_deref(), Some("stored-ssid"));
+
+        // A first-time set needs both developer fields.
+        let first = resolve_screenscraper_credentials(
+            &StoredScreenScraper::default(),
+            "dev",
+            "dev-password",
+            "",
+            "",
+        )
+        .expect("complete set");
+        assert_eq!(first.dev_id.as_deref(), Some("dev"));
+        assert_eq!(first.ssid, None);
+    }
+
+    /// Both rejected shapes get the friendly text the form shows, and that text
+    /// never contains a credential value the user typed.
+    #[test]
+    fn partial_screenscraper_pairs_are_rejected_with_friendly_text() {
+        let stored = StoredScreenScraper::default();
+
+        let missing_dev =
+            resolve_screenscraper_credentials(&stored, "", "", "user", "user-password")
+                .unwrap_err();
+        assert_eq!(
+            missing_dev,
+            "Enter the ScreenScraper dev id and dev password."
+        );
+
+        // The user's other half is blank, and no user account is stored, so the
+        // typed SSID is an incomplete pair.
+        let missing_user_password =
+            resolve_screenscraper_credentials(&stored, "dev", DEV_PASSWORD_SENTINEL, "user", "")
+                .unwrap_err();
+        assert_eq!(
+            missing_user_password,
+            "Enter both the ScreenScraper user SSID and user SS password."
+        );
+
+        let missing_user_ssid =
+            resolve_screenscraper_credentials(&stored, "dev", DEV_PASSWORD_SENTINEL, "", "secret")
+                .unwrap_err();
+        assert_eq!(
+            missing_user_ssid,
+            "Enter both the ScreenScraper user SSID and user SS password."
+        );
+
+        for message in [missing_dev, missing_user_password, missing_user_ssid] {
+            assert!(!message.contains(DEV_PASSWORD_SENTINEL));
+            assert!(!message.contains("secret"));
+        }
+
+        // Oversized input is refused before it reaches the keyring.
+        let oversized = "x".repeat(SCREENSCRAPER_VALUE_MAX_LEN + 1);
+        let error = resolve_screenscraper_credentials(&stored, &oversized, "dev-password", "", "")
+            .unwrap_err();
+        assert!(error.contains("at most"));
+        assert!(!error.contains(&oversized));
+    }
+
+    /// A write that fails halfway restores every entry it already replaced, so
+    /// the stored set still matches what the UI shows.
+    #[test]
+    fn screenscraper_mid_write_failure_restores_the_prior_secrets() {
+        let dev_id: Arc<dyn TokenStore> =
+            Arc::new(MemoryTokenStore::new(Some(DEV_ID_SENTINEL.to_string())));
+        // Fails the forward write *after* dropping the prior value, so the
+        // assertion below only passes if the rollback wrote it back.
+        let dev_password = FailFirstSaveStore::new(Some(DEV_PASSWORD_SENTINEL));
+        let ssid: Arc<dyn TokenStore> = Arc::new(MemoryTokenStore::default());
+
+        let error = persist_screenscraper_credentials(&[
+            (
+                dev_id.as_ref(),
+                Some(DEV_ID_SENTINEL.to_string()),
+                Some("new-dev-id".to_string()),
+            ),
+            (
+                &dev_password,
+                Some(DEV_PASSWORD_SENTINEL.to_string()),
+                Some("new-dev-password".to_string()),
+            ),
+            (ssid.as_ref(), None, Some("new-ssid".to_string())),
+        ])
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            "Could not save the ScreenScraper credentials to the OS keyring."
+        );
+        // The rollback itself succeeded, so no warning is appended.
+        assert!(!error.contains("could not be fully restored"));
+        assert!(!error.contains(DEV_PASSWORD_SENTINEL));
+        assert_eq!(dev_id.load().unwrap().as_deref(), Some(DEV_ID_SENTINEL));
+        assert_eq!(dev_password.token().as_deref(), Some(DEV_PASSWORD_SENTINEL));
+        // The failure happened before this entry was touched.
+        assert_eq!(ssid.load().unwrap(), None);
+    }
+
+    /// A rollback that cannot undo an entry must say so instead of reporting a
+    /// clean failure.
+    #[test]
+    fn screenscraper_rollback_failure_is_reported_instead_of_swallowed() {
+        let dev_id = WriteThenFailStore::new(Some("old-dev-id"));
+        let dev_password: Arc<dyn TokenStore> = Arc::new(MemoryTokenStore::default());
+
+        let error = persist_screenscraper_credentials(&[
+            (
+                &dev_id,
+                Some("old-dev-id".to_string()),
+                Some("new-dev-id".to_string()),
+            ),
+            (
+                dev_password.as_ref(),
+                None,
+                Some("new-dev-password".to_string()),
+            ),
+        ])
+        .unwrap_err();
+
+        assert!(
+            error.starts_with("Could not save the ScreenScraper credentials to the OS keyring.")
+        );
+        assert!(error.contains("could not be fully restored"));
+        assert!(!error.contains("leaked"));
+        // The forward write landed even though it reported an error, which is
+        // exactly the state the warning is there to describe.
+        assert_eq!(dev_id.token().as_deref(), Some("new-dev-id"));
+    }
+
+    /// Unchanged fields are not rewritten: a keyring write is visible to the OS
+    /// credential store, so a no-op form must not touch it.
+    #[test]
+    fn screenscraper_persist_writes_only_changed_fields() {
+        let dev_id: Arc<dyn TokenStore> =
+            Arc::new(MemoryTokenStore::new(Some(DEV_ID_SENTINEL.to_string())));
+        let dev_password: Arc<dyn TokenStore> = Arc::new(MemoryTokenStore::new(Some(
+            DEV_PASSWORD_SENTINEL.to_string(),
+        )));
+        let ssid: Arc<dyn TokenStore> = Arc::new(MemoryTokenStore::default());
+
+        persist_screenscraper_credentials(&[
+            (
+                dev_id.as_ref(),
+                Some(DEV_ID_SENTINEL.to_string()),
+                Some(DEV_ID_SENTINEL.to_string()),
+            ),
+            (
+                dev_password.as_ref(),
+                Some(DEV_PASSWORD_SENTINEL.to_string()),
+                Some("new-dev-password".to_string()),
+            ),
+            // Clearing an absent entry is a no-op too.
+            (ssid.as_ref(), None, None),
+        ])
+        .unwrap();
+
+        assert_eq!(dev_id.load().unwrap().as_deref(), Some(DEV_ID_SENTINEL));
+        assert_eq!(
+            dev_password.load().unwrap().as_deref(),
+            Some("new-dev-password")
+        );
+        assert_eq!(ssid.load().unwrap(), None);
+
+        // Clearing removes what is stored and keeps the rest.
+        persist_screenscraper_credentials(&[
+            (dev_id.as_ref(), Some(DEV_ID_SENTINEL.to_string()), None),
+            (
+                dev_password.as_ref(),
+                Some("new-dev-password".to_string()),
+                None,
+            ),
+        ])
+        .unwrap();
+        assert_eq!(dev_id.load().unwrap(), None);
+        assert_eq!(dev_password.load().unwrap(), None);
+    }
+
+    /// Metadata errors are mapped by class only: the `Display` form can carry
+    /// endpoint URLs, response bodies, and credential-shaped server text.
+    #[test]
+    fn metadata_fetch_error_never_leaks_credential_material() {
+        let sentinel = "dev-password-sentinel-should-never-appear";
+        let errors = [
+            savesync_core::Error::Auth(format!("sspassword={sentinel} rejected")),
+            savesync_core::Error::NotFound(format!(
+                "https://api.screenscraper.fr/?devpassword={sentinel}"
+            )),
+            savesync_core::Error::Network(format!("connection reset by {sentinel}")),
+            savesync_core::Error::InvalidState(sentinel.to_string()),
+        ];
+
+        for error in errors {
+            let message = metadata_fetch_error(&error);
+            assert!(!message.contains(sentinel), "leaked into {message}");
+            // No branch forwards the raw error text or its URL.
+            assert!(!message.contains("api.screenscraper.fr"));
+            assert!(!message.contains("sspassword"));
+        }
+
+        assert!(
+            metadata_fetch_error(&savesync_core::Error::Auth("x".into())).contains("ScreenScraper")
+        );
+        assert!(
+            metadata_fetch_error(&savesync_core::Error::NotFound("x".into()))
+                .contains("No metadata found")
+        );
+    }
+
+    /// Validation happens before persistence, so a credential set core would
+    /// reject never reaches the keyring.
+    #[test]
+    fn screenscraper_validation_rejects_an_incomplete_set_before_persisting() {
+        assert!(
+            validate_screenscraper_credentials(&ScreenScraperCredentials::developer(
+                "dev",
+                DEV_PASSWORD_SENTINEL
+            ))
+            .is_ok()
+        );
+
+        // Core's own check is the second line of defence behind the friendly
+        // pre-check; its message must still be credential-free.
+        let error = validate_screenscraper_credentials(&ScreenScraperCredentials::developer(
+            "",
+            DEV_PASSWORD_SENTINEL,
+        ))
+        .unwrap_err();
+        assert!(!error.contains(DEV_PASSWORD_SENTINEL));
+
+        // A stored SSID without its password is dropped rather than sent.
+        let stored = StoredScreenScraper {
+            dev_id: Some("dev".into()),
+            dev_password: Some(DEV_PASSWORD_SENTINEL.into()),
+            ssid: Some("user".into()),
+            sspassword: None,
+        };
+        let credentials = stored.credentials().expect("developer pair is complete");
+        assert!(validate_screenscraper_credentials(&credentials).is_ok());
+
+        // No developer pair at all: nothing to build, so nothing to persist.
+        assert!(
+            StoredScreenScraper {
+                ssid: Some("user".into()),
+                sspassword: Some("secret".into()),
+                ..StoredScreenScraper::default()
+            }
+            .credentials()
+            .is_none()
+        );
     }
 }

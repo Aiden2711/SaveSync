@@ -130,6 +130,53 @@ export interface CoverSearch {
   candidates: GridCandidate[];
 }
 
+/**
+ * Where a game's metadata came from, matching the core `MetadataSource` ids.
+ *
+ * `screenscraper` is one word because that is the brand name and the identifier
+ * the core stores; splitting it would desynchronize the stored value.
+ */
+export type MetadataSource = "steam" | "screenscraper" | "igdb";
+
+/**
+ * Normalized metadata for one game (`GameMetadata` in the core).
+ *
+ * Optional fields are `null` and lists empty when the provider has no answer,
+ * never invented. `source_id` is provider-local and must be treated as opaque.
+ */
+export interface GameMetadata {
+  source: MetadataSource;
+  source_id: string;
+  name: string;
+  release_year: number | null;
+  release_date: string | null;
+  genres: string[];
+  developers: string[];
+  publishers: string[];
+  description_short: string | null;
+  description_long: string | null;
+  players: string | null;
+  age_rating: string | null;
+  franchise: string | null;
+  themes: string[];
+  /** RFC 3339 timestamp of the fetch that produced this row. */
+  fetched_at: string;
+}
+
+/**
+ * Which ScreenScraper credential pairs are stored, exactly as
+ * `ScreenScraperStatus` serializes.
+ *
+ * Flags only: no part of a credential — not even its length — crosses IPC.
+ * `configured` is the developer pair, which is ScreenScraper's minimum; the user
+ * account only raises the request quota.
+ */
+export interface ScreenScraperStatus {
+  configured: boolean;
+  dev_configured: boolean;
+  user_configured: boolean;
+}
+
 export interface AppStatus {
   device: string;
   platform: string;

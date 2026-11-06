@@ -8,12 +8,15 @@ import type {
   DirtyEvent,
   DiscoveredGame,
   Game,
+  GameMetadata,
   GoogleStatus,
+  MetadataSource,
   OAuthStart,
   ProviderKind,
   ProviderStatus,
   RestoreReport,
   Revision,
+  ScreenScraperStatus,
   SnapshotInfo,
   SyncReport,
 } from "./types";
@@ -90,6 +93,46 @@ export const api = {
   steamgriddbStatus: () => invoke<ArtworkStatus>("steamgriddb_status"),
 
   clearSteamgriddbApiKey: () => invoke<ArtworkStatus>("clear_steamgriddb_api_key"),
+
+  /**
+   * Fetch and cache metadata for one game, then return the stored row.
+   *
+   * `source` is omitted from the IPC payload when not chosen, so the Rust side
+   * picks the default (ScreenScraper when configured, Steam otherwise).
+   */
+  fetchGameMetadata: (game_id: string, source?: MetadataSource) =>
+    source
+      ? invoke<GameMetadata>("fetch_game_metadata", { game_id, source })
+      : invoke<GameMetadata>("fetch_game_metadata", { game_id }),
+
+  /** Cached metadata only: no network request, so it works offline. */
+  gameMetadata: (game_id: string) =>
+    invoke<GameMetadata | null>("game_metadata", { game_id }),
+
+  /**
+   * Store the ScreenScraper credentials in the OS keyring.
+   *
+   * A blank field keeps the stored value, so changing one credential never
+   * requires holding the others. Returns flags only.
+   */
+  setScreenscraperCredentials: (
+    dev_id: string,
+    dev_password: string,
+    ssid: string,
+    sspassword: string,
+  ) =>
+    invoke<ScreenScraperStatus>("set_screenscraper_credentials", {
+      dev_id,
+      dev_password,
+      ssid,
+      sspassword,
+    }),
+
+  screenscraperStatus: () =>
+    invoke<ScreenScraperStatus>("screenscraper_status"),
+
+  clearScreenscraperCredentials: () =>
+    invoke<ScreenScraperStatus>("clear_screenscraper_credentials"),
 
   fetchCoverArt: (game_id: string) => invoke<Game>("fetch_cover_art", { game_id }),
 

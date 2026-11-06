@@ -18,11 +18,14 @@ import type {
   Conflict,
   CoverSearch,
   Game,
+  GameMetadata,
   GoogleStatus,
+  MetadataSource,
   ProviderKind,
   ProviderStatus,
   RestoreReport,
   Revision,
+  ScreenScraperStatus,
 } from "../types";
 
 export interface InvokeCall {
@@ -254,6 +257,51 @@ export function failArtworkKeySave(message: string): void {
   artworkSaveError = message;
 }
 
+/**
+ * ScreenScraper credential flags for the stub.
+ *
+ * Flags only, exactly like the Rust `ScreenScraperStatus`: the stub never holds
+ * a credential, so a test that reads state here cannot see one.
+ */
+let screenscraperStatus: ScreenScraperStatus = defaultScreenscraperStatus();
+/** When set, the next credential save rejects with this generic message. */
+let screenscraperSaveError: string | null = null;
+
+/** Cached metadata per game id; `fetch_game_metadata` fills it. */
+const metadataCache = new Map<string, GameMetadata>();
+/** When set, the next `fetch_game_metadata` rejects with this message. */
+let metadataFetchError: string | null = null;
+
+/** Seed which ScreenScraper pairs the settings form should show as saved. */
+export function seedScreenscraperStatus(patch: Partial<ScreenScraperStatus>): void {
+  screenscraperStatus = { ...screenscraperStatus, ...patch };
+}
+
+/** Makes the next `set_screenscraper_credentials` reject with this message. */
+export function failScreenscraperCredentialSave(message: string): void {
+  screenscraperSaveError = message;
+}
+
+/** Makes the next `fetch_game_metadata` reject with this message, then clear it. */
+export function failMetadataFetch(message: string): void {
+  metadataFetchError = message;
+}
+
+/**
+ * Seed a cached metadata row before rendering.
+ *
+ * Mirrors `game_metadata`: the detail view reads this without a network call,
+ * so a test can assert the offline path. Returns the stored row.
+ */
+export function seedGameMetadata(
+  gameId: string,
+  patch: Partial<GameMetadata> = {},
+): GameMetadata {
+  const metadata: GameMetadata = { ...metadataFor(gameId, "steam"), ...patch };
+  metadataCache.set(gameId, metadata);
+  return metadata;
+}
+
 /** Mark Dropbox connected, as the real flow does once sign-in completes. */
 export function seedDropboxConnected(identifier = "test-app-key"): void {
   dropboxStatus = {
@@ -428,6 +476,38 @@ function setWideCoverPath(gameId: string, wideCoverPath: string | null): Game {
 
 type Handler = (args: Record<string, unknown>) => unknown;
 
+/** All-false credential flags; also the state `clear_...` returns to. */
+function defaultScreenscraperStatus(): ScreenScraperStatus {
+  return { configured: false, dev_configured: false, user_configured: false };
+}
+
+/**
+ * Plausible metadata for a fixture game.
+ *
+ * Built from the game so a test never has to hardcode a title twice, and never
+ * carries anything credential-shaped.
+ */
+function metadataFor(gameId: string, source: MetadataSource): GameMetadata {
+  const game = findGame(gameId);
+  return {
+    source,
+    source_id: `stub-${gameId.slice(0, 8)}`,
+    name: game.title,
+    release_year: 2020,
+    release_date: "17 Sep, 2020",
+    genres: ["Action", "Roguelike"],
+    developers: ["Supergiant Games"],
+    publishers: ["Supergiant Games"],
+    description_short: "A rogue-like dungeon crawler.",
+    description_long: "Defy the god of the dead as you hack and slash out of the Underworld.",
+    players: "1",
+    age_rating: "T",
+    franchise: game.title,
+    themes: ["Mythology"],
+    fetched_at: "2026-01-06T00:00:00Z",
+  };
+}
+
 /** Status of the provider a command would report, matching the Rust shapes. */
 function providerStatus(kind: ProviderKind): ProviderStatus {
   if (kind === "dropbox") return dropboxStatus;
@@ -541,6 +621,76 @@ const handlers: Record<string, Handler> = {
     artworkStatus = { configured: false };
     return artworkStatus;
   },
+  screenscraper_status: () => screenscraperStatus,
+  set_screenscraper_credentials: (args) => {
+    if (screenscraperSaveError) {
+      // One-shot, so a retry can be asserted independently.
+      const message = screenscraperSaveError;
+      screenscraperSaveError = null;
+      throw new Error(message);
+    }
+    const field = (value: unknown) => (typeof value === "string" ? value.trim() : "");
+    // Blank keeps the stored value, exactly like the command.
+    const devIdSet = field(args.dev_id) !== "" || screenscraperStatus.dev_configured;
+    const devPasswordSet =
+      field(args.dev_password) !== "" || screenscraperStatus.dev_configured;
+    if (!devIdSet || !devPasswordSet) {
+      throw new Error("Enter the ScreenScraper dev id and dev password.");
+    }
+    const ssidSet = field(args.ssid) !== "" || screenscraperStatus.user_configured;
+    const sspasswordSet =
+      field(args.sspassword) !== "" || screenscraperStatus.user_configured;
+    if (ssidSet !== sspasswordSet) {
+      throw new Error("Enter both the ScreenScraper user SSID and user SS password.");
+    }
+    screenscraperStatus = {
+      configured: true,
+      dev_configured: true,
+      user_configured: ssidSet,
+    };
+    return screenscraperStatus;
+  },
+  clear_screenscraper_credentials: () => {
+    screenscraperStatus = defaultScreenscraperStatus();
+    return screenscraperStatus;
+  },
+  /**
+   * Fetch metadata. An omitted source follows the command: ScreenScraper when
+   * credentials are stored, the keyless Steam Store otherwise.
+   */
+  fetch_game_metadata: (args) => {
+    assertKnownGame(args);
+    const gameId = String(args.game_id);
+    if (metadataFetchError) {
+      const message = metadataFetchError;
+      metadataFetchError = null;
+      throw new Error(message);
+    }
+    const requested = typeof args.source === "string" ? args.source : undefined;
+    if (
+      requested !== undefined &&
+      requested !== "steam" &&
+      requested !== "screenscraper" &&
+      requested !== "igdb"
+    ) {
+      throw new Error(`Tauri stub: unknown metadata source "${requested}"`);
+    }
+    const source: MetadataSource =
+      requested ?? (screenscraperStatus.configured ? "screenscraper" : "steam");
+    if (source === "screenscraper" && !screenscraperStatus.configured) {
+      // The command maps core's `Auth` to this generic text, never a value.
+      throw new Error(
+        "ScreenScraper rejected the saved credentials. Check the developer credentials and, if one is saved, the user account.",
+      );
+    }
+    if (source === "igdb") {
+      throw new Error("Could not fetch metadata for this game.");
+    }
+    const metadata = metadataFor(gameId, source);
+    metadataCache.set(gameId, metadata);
+    return metadata;
+  },
+  game_metadata: (args) => metadataCache.get(String(args.game_id)) ?? null,
   cover_url: (args) => {
     const gameId = String(args.game_id);
     // The Rust command defaults to portrait, so a missing kind must too.
@@ -643,6 +793,10 @@ export function installTauriStub(): InvokeCall[] {
   coverSearchError = null;
   coverSearchGate = null;
   coverRevision = 0;
+  screenscraperStatus = defaultScreenscraperStatus();
+  screenscraperSaveError = null;
+  metadataCache.clear();
+  metadataFetchError = null;
 
   const internals: TauriInternalsStub = {
     invoke: async (cmd, args = {}) => {
