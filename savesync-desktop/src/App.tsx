@@ -11,11 +11,14 @@ import type {
   CoverKind,
   DirtyEvent,
   Game,
+  GameMetadata,
   GoogleStatus,
   GridCandidate,
+  MetadataSource,
   ProviderKind,
   ProviderStatus,
   Revision,
+  ScreenScraperStatus,
   SyncReport,
 } from "./types";
 
@@ -102,6 +105,21 @@ function providerErrorText(kind: ProviderKind, message: string): string {
   const whatHappened = message.trim().replace(/[.!?]+$/, "");
   return `${whatHappened}. ${PROVIDER_ERROR_ADVICE[kind]}`;
 }
+
+/**
+ * Display name of each metadata provider, for the detail panel's source chip.
+ *
+ * The ids come from core (`MetadataSource`); only a `screenscraper` id is
+ * unspaced, so the label map is the one place the brand spelling differs.
+ */
+const METADATA_SOURCE_LABELS: Record<MetadataSource, string> = {
+  steam: "Steam",
+  screenscraper: "ScreenScraper",
+  igdb: "IGDB",
+};
+
+/** Busy line for a manual metadata fetch; the detail button reuses the label. */
+const METADATA_BUSY = "Fetching metadata";
 
 /** State of the "Choose cover art" modal. */
 type CoverPickerState = {
@@ -392,6 +410,29 @@ export default function App() {
   const [artworkConfigured, setArtworkConfigured] = useState(false);
   const [steamGridKeyDraft, setSteamGridKeyDraft] = useState("");
   /**
+   * ScreenScraper credential *presence*, never a value. The panel prefills from
+   * these three flags alone, so a stored credential cannot reach the DOM.
+   */
+  const [screenscraper, setScreenscraper] = useState<ScreenScraperStatus>({
+    configured: false,
+    dev_configured: false,
+    user_configured: false,
+  });
+  /** Non-secret identifiers, held in state the same way a username is. */
+  const [ssDevIdDraft, setSsDevIdDraft] = useState("");
+  const [ssSsidDraft, setSsSsidDraft] = useState("");
+  /**
+   * Both ScreenScraper passwords are read off the DOM at submit time and never
+   * copied into React state, so they cannot be rendered, logged, or surfaced in
+   * an error line.
+   */
+  const ssDevPasswordRef = useRef<HTMLInputElement>(null);
+  const ssUserPasswordRef = useRef<HTMLInputElement>(null);
+  /** Cached metadata for the open game; null means none has been fetched yet. */
+  const [metadata, setMetadata] = useState<GameMetadata | null>(null);
+  /** Whether the long description is expanded in the detail panel. */
+  const [metadataExpanded, setMetadataExpanded] = useState(false);
+  /**
    * Resolved `savesync-cover:` URLs, keyed by game id. Only games with a cached
    * cover appear here; everything else keeps the generated monogram.
    */
@@ -666,6 +707,34 @@ export default function App() {
     }
   }, [selectedId, loadGameDetails]);
 
+  /**
+   * Read the cached metadata when a game's detail view opens.
+   *
+   * `game_metadata` never makes a network call, so this stays offline-safe and
+   * cannot delay the snapshot, restore, or sync panels. A read failure is
+   * deliberately swallowed: metadata is optional chrome, and leaving the panel
+   * empty keeps the manual fetch button (and its error banner) as the retry.
+   */
+  useEffect(() => {
+    setMetadataExpanded(false);
+    // A different game must never show the previous game's catalogue entry, not
+    // even in the frame before the cached read resolves.
+    setMetadata(null);
+    if (!selectedId) return;
+    let cancelled = false;
+    void api
+      .gameMetadata(selectedId)
+      .then((next) => {
+        if (!cancelled) setMetadata(next);
+      })
+      .catch(() => {
+        if (!cancelled) setMetadata(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId]);
+
   useEffect(() => {
     if (!drive.pending) return;
     const timer = window.setInterval(() => {
@@ -737,22 +806,27 @@ export default function App() {
   }, []);
 
   /**
-   * SteamGridDB key state is fetched when the Settings view opens, not at
-   * startup: the library and restore flows never need it, so it must not add
-   * work (or a keyring read) to application startup.
+   * Credential presence for both metadata/artwork providers is fetched when the
+   * Settings view opens, not at startup: the library and restore flows never
+   * need it, so it must not add work (or a keyring read) to application startup.
    */
   useEffect(() => {
     if (!isDesktop()) return;
     if (view !== "settings") {
-      // Do not keep a typed secret around in memory after leaving Settings.
+      // Do not keep a typed secret around in memory after leaving Settings. The
+      // fields themselves unmount with this view, so the DOM-held passwords go
+      // with them; the drafts are cleared so the next open starts blank too.
       setSteamGridKeyDraft("");
+      setSsDevIdDraft("");
+      setSsSsidDraft("");
       return;
     }
     let cancelled = false;
-    void api
-      .steamgriddbStatus()
-      .then((next) => {
-        if (!cancelled) setArtworkConfigured(next.configured);
+    void Promise.all([api.steamgriddbStatus(), api.screenscraperStatus()])
+      .then(([artwork, credentials]) => {
+        if (cancelled) return;
+        setArtworkConfigured(artwork.configured);
+        setScreenscraper(credentials);
       })
       .catch((cause) => {
         if (!cancelled) {
@@ -1115,6 +1189,64 @@ export default function App() {
       setArtworkConfigured(next.configured);
       setSteamGridKeyDraft("");
       setNotice("SteamGridDB API key removed from the OS keyring.");
+    }
+  }
+
+  /**
+   * Store the four ScreenScraper values in the OS keyring.
+   *
+   * A blank field keeps the stored value, which is what lets someone change one
+   * credential without retyping the rest. The backend owns the friendly text for
+   * an incomplete pair ("enter both the user SSID and …"), so nothing is
+   * re-implemented and no value is echoed into the banner.
+   */
+  async function saveScreenscraperCredentials(event: FormEvent) {
+    event.preventDefault();
+    const next = await run("Saving ScreenScraper credentials", () =>
+      api.setScreenscraperCredentials(
+        ssDevIdDraft.trim(),
+        ssDevPasswordRef.current?.value ?? "",
+        ssSsidDraft.trim(),
+        ssUserPasswordRef.current?.value ?? "",
+      ),
+    );
+    if (next) {
+      setScreenscraper(next);
+      // Presence flags now describe the stored set, so the drafts go back to
+      // placeholders rather than showing a value the UI never received.
+      setSsDevIdDraft("");
+      setSsSsidDraft("");
+      if (ssDevPasswordRef.current) ssDevPasswordRef.current.value = "";
+      if (ssUserPasswordRef.current) ssUserPasswordRef.current.value = "";
+      setNotice("ScreenScraper credentials saved in the OS keyring.");
+    }
+  }
+
+  async function clearScreenscraperCredentials() {
+    const next = await run("Clearing ScreenScraper credentials", () =>
+      api.clearScreenscraperCredentials(),
+    );
+    if (next) {
+      setScreenscraper(next);
+      setSsDevIdDraft("");
+      setSsSsidDraft("");
+      if (ssDevPasswordRef.current) ssDevPasswordRef.current.value = "";
+      if (ssUserPasswordRef.current) ssUserPasswordRef.current.value = "";
+      setNotice("ScreenScraper credentials removed from the OS keyring.");
+    }
+  }
+
+  /**
+   * Fetch metadata for the open game. Manual only: this is never called from an
+   * effect, so opening a detail view cannot touch the network, and a failure
+   * leaves the cached panel exactly as it was.
+   */
+  async function fetchGameMetadata(game: Game) {
+    const next = await run(METADATA_BUSY, () => api.fetchGameMetadata(game.id));
+    if (next) {
+      setMetadata(next);
+      setMetadataExpanded(false);
+      setNotice(`Metadata fetched from ${METADATA_SOURCE_LABELS[next.source]}.`);
     }
   }
 
@@ -1533,6 +1665,52 @@ export default function App() {
   }
 
   function renderDetailView(game: Game) {
+    /*
+     * Catalogue facts, in the order the panel reads them. Only what the provider
+     * actually answered is listed: an absent year or an empty credits list is
+     * omitted rather than rendered as a placeholder.
+     */
+    const metadataFacts: { label: string; value: string }[] = [];
+    if (metadata) {
+      if (metadata.release_year !== null) {
+        metadataFacts.push({
+          label: "Year",
+          value: String(metadata.release_year),
+        });
+      }
+      if (metadata.genres.length > 0) {
+        metadataFacts.push({ label: "Genres", value: metadata.genres.join(", ") });
+      }
+      if (metadata.developers.length > 0) {
+        metadataFacts.push({
+          label: "Developers",
+          value: metadata.developers.join(", "),
+        });
+      }
+      if (metadata.publishers.length > 0) {
+        metadataFacts.push({
+          label: "Publishers",
+          value: metadata.publishers.join(", "),
+        });
+      }
+    }
+    const shortDescription = metadata?.description_short?.trim() || null;
+    const longDescription = metadata?.description_long?.trim() || null;
+    /*
+     * The short form is what the panel shows by default. A toggle is only honest
+     * when the long form says more than the paragraph already on screen; with two
+     * identical strings, or no long form, it would be a control that does
+     * nothing.
+     */
+    const canExpand =
+      shortDescription !== null &&
+      longDescription !== null &&
+      longDescription.length > shortDescription.length;
+    const description =
+      metadataExpanded && longDescription
+        ? longDescription
+        : (shortDescription ?? longDescription);
+
     return (
       <section className="view" aria-labelledby="game-title">
         <button
@@ -1645,6 +1823,62 @@ export default function App() {
               ))}
             </section>
           )}
+
+          <section className="panel" aria-labelledby="metadata-title">
+            <div className="panel-title">
+              <h2 id="metadata-title">Metadata</h2>
+              {metadata && (
+                <span className="metadata-source">
+                  via {METADATA_SOURCE_LABELS[metadata.source]}
+                </span>
+              )}
+            </div>
+            {metadata ? (
+              <>
+                {metadataFacts.length > 0 && (
+                  <dl className="metadata-facts">
+                    {metadataFacts.map((fact) => (
+                      <div className="metadata-fact" key={fact.label}>
+                        <dt>{fact.label}</dt>
+                        <dd>{fact.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                )}
+                {description && (
+                  <div className="metadata-description">
+                    <p>{description}</p>
+                    {canExpand && (
+                      <button
+                        className="ghost tiny"
+                        type="button"
+                        aria-expanded={metadataExpanded}
+                        onClick={() => setMetadataExpanded((current) => !current)}
+                      >
+                        {metadataExpanded ? "Show less" : "Read more"}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </>
+            ) : (
+              <p className="muted">
+                No metadata yet. Fetch it to add the year, genres, credits, and
+                description shown on the store page.
+              </p>
+            )}
+            <div className="row">
+              <button
+                className="ghost"
+                type="button"
+                disabled={!!busy}
+                title="Look the game up with the configured metadata source"
+                onClick={() => void fetchGameMetadata(game)}
+              >
+                {busy === METADATA_BUSY ? "Fetching…" : "Fetch metadata"}
+              </button>
+            </div>
+          </section>
 
           <section className="panel">
             <div className="panel-title">
@@ -2177,6 +2411,128 @@ export default function App() {
                   Remove key
                 </button>
               )}
+            </div>
+          </form>
+        </section>
+
+        <section className="panel" aria-labelledby="settings-screenscraper">
+          <div className="panel-title">
+            <h2 id="settings-screenscraper">ScreenScraper</h2>
+            <span
+              className={screenscraper.dev_configured ? "status on" : "status"}
+            >
+              {screenscraper.dev_configured
+                ? screenscraper.user_configured
+                  ? "Developer and user saved"
+                  : "Developer credentials saved"
+                : "Not set up"}
+            </span>
+          </div>
+          <p className="muted small">
+            Alternative metadata source, used first once it is configured.
+            ScreenScraper needs a developer pair; a user account only raises the
+            request quota.
+          </p>
+          <form className="stack" onSubmit={saveScreenscraperCredentials}>
+            <label>
+              Dev ID
+              <input
+                value={ssDevIdDraft}
+                onChange={(event) => setSsDevIdDraft(event.target.value)}
+                aria-label="ScreenScraper dev id"
+                aria-describedby="screenscraper-dev-note"
+                placeholder={
+                  screenscraper.dev_configured
+                    ? "Stored in the OS keyring"
+                    : "ScreenScraper developer id"
+                }
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+            <label>
+              Dev password
+              <input
+                type="password"
+                ref={ssDevPasswordRef}
+                aria-label="ScreenScraper dev password"
+                aria-describedby="screenscraper-dev-note"
+                placeholder={
+                  screenscraper.dev_configured
+                    ? "Stored in the OS keyring"
+                    : "Developer password"
+                }
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+            <p className="muted small" id="screenscraper-dev-note">
+              Required. Request a developer account in the{" "}
+              <DocsLink
+                href="https://www.screenscraper.fr/forumsujets.php?frub=12"
+                onError={setError}
+              >
+                ScreenScraper developer forum
+              </DocsLink>
+              . Leave a field blank to keep the value already stored. All four
+              values live in the OS keyring, never in the SaveSync database or
+              logs.
+            </p>
+            <label>
+              User SSID
+              <input
+                value={ssSsidDraft}
+                onChange={(event) => setSsSsidDraft(event.target.value)}
+                aria-label="ScreenScraper user SSID"
+                aria-describedby="screenscraper-user-note"
+                placeholder={
+                  screenscraper.user_configured
+                    ? "Stored in the OS keyring"
+                    : "ScreenScraper user SSID (optional)"
+                }
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+            <label>
+              User SS password
+              <input
+                type="password"
+                ref={ssUserPasswordRef}
+                aria-label="ScreenScraper user SS password"
+                aria-describedby="screenscraper-user-note"
+                placeholder={
+                  screenscraper.user_configured
+                    ? "Stored in the OS keyring"
+                    : "User SS password (optional)"
+                }
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+            <p className="muted small" id="screenscraper-user-note">
+              Optional. A ScreenScraper user account raises the request quota;
+              create one at{" "}
+              <DocsLink
+                href="https://www.screenscraper.fr/membreinscription.php"
+                onError={setError}
+              >
+                screenscraper.fr/membreinscription.php
+              </DocsLink>
+              .
+            </p>
+            <div className="row">
+              <button className="primary" type="submit" disabled={!!busy}>
+                Save credentials
+              </button>
+              <button
+                type="button"
+                onClick={() => void clearScreenscraperCredentials()}
+                disabled={!!busy || !screenscraper.configured}
+                title="Remove the ScreenScraper credentials from the OS keyring"
+              >
+                Clear
+              </button>
             </div>
           </form>
         </section>

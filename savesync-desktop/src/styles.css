@@ -1319,6 +1319,75 @@ label {
   gap: var(--space-sm);
 }
 
+/*
+ * Metadata panel. The facts are a `dl` so label and value stay paired for assistive
+ * technology, while the layout is one wrapped line — the same rhythm as
+ * `.detail-meta` above it, without a column of doubled text.
+ */
+.metadata-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-3xs) var(--space-2xs);
+  margin: 0;
+}
+
+.metadata-fact {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-3xs);
+  min-width: 0;
+}
+
+.metadata-fact + .metadata-fact::before {
+  content: "·";
+  margin-right: var(--space-3xs);
+  color: var(--ink-3);
+}
+
+.metadata-fact dt {
+  color: var(--ink-3);
+  font-family: var(--font-ui);
+  font-size: var(--text-2xs);
+  font-weight: 550;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.metadata-fact dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.metadata-description {
+  display: grid;
+  gap: var(--space-3xs);
+  justify-items: start;
+}
+
+.metadata-description p {
+  margin: 0;
+  max-width: 76ch;
+  color: var(--ink-2);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+}
+
+/* Provenance, not state: the `.status` chip geometry with accent text instead of
+   the accent dot, so it cannot be mistaken for a connection indicator. */
+.metadata-source {
+  padding: 2px var(--space-2xs);
+  background: var(--glass);
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  color: var(--accent-text);
+  font-size: var(--text-2xs);
+  font-weight: 550;
+  white-space: nowrap;
+}
+
 .panel.conflicts {
   border-color: var(--warn);
 }

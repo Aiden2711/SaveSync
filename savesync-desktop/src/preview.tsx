@@ -20,6 +20,12 @@
  *
  * `?featured=1` pins the first fixture as the library's wide banner and seeds
  * its wide cover cache, so the featured tile can be captured in both themes.
+ *
+ * `?metadata=1` seeds a cached metadata row for the first fixture so the detail
+ * panel's populated state can be captured; `?metadata=empty` seeds nothing and
+ * captures the empty state. Either one also marks ScreenScraper configured, so
+ * the Settings panel shows its populated, keyring-placeholder presentation — the
+ * stub carries flags only, never a credential.
  */
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -32,8 +38,10 @@ import {
   seedDirtyGames,
   seedFeatured,
   seedGames,
+  seedGameMetadata,
   seedGoogleStatus,
   seedProviderStatus,
+  seedScreenscraperStatus,
   seedWideCover,
 } from "./test/tauri-stub";
 import type { ProviderKind } from "./types";
@@ -127,6 +135,23 @@ if (params.get("featured") === "1") {
 }
 
 seedCloudState();
+
+/**
+ * Cached-metadata presets. `?metadata=empty` deliberately seeds nothing: the
+ * detail panel then renders its "No metadata yet." state, which is the point of
+ * that capture.
+ */
+const metadataPreset = params.get("metadata");
+if (metadataPreset === "1") {
+  seedGameMetadata(fixtures.primaryGameId);
+}
+if (metadataPreset === "1" || metadataPreset === "empty") {
+  seedScreenscraperStatus({
+    configured: true,
+    dev_configured: true,
+    user_configured: true,
+  });
+}
 
 const container = document.getElementById("root");
 if (!container) throw new Error("missing #root element");
