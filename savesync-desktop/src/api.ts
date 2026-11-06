@@ -57,6 +57,9 @@ export const api = {
 
   openAuthUrl: (url: string) => invoke<void>("open_auth_url", { url }),
 
+  /** Opens one of the documented help pages in the system browser. */
+  openDocsUrl: (url: string) => invoke<void>("open_docs_url", { url }),
+
   disconnectGoogle: () => invoke<GoogleStatus>("disconnect_google"),
 
   setDropboxAppKey: (app_key: string) =>

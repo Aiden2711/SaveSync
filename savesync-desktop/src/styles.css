@@ -1546,6 +1546,28 @@ label {
   font-size: var(--text-xs);
 }
 
+/*
+ * A documentation link inside helper text. Underlined so it reads as a link in
+ * both themes, and accent-coloured like the rest of the interactive state
+ * tokens; the shell opens it in the system browser rather than the webview.
+ */
+.docs-link {
+  color: var(--accent-text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+
+.docs-link:hover {
+  color: var(--accent-hover);
+}
+
+.docs-link:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
 .tiny {
   font-size: var(--text-2xs);
 }
@@ -1651,17 +1673,33 @@ dialog.modal .dialog-card {
 }
 
 /*
- * The cover picker is a browsing surface, not a yes/no question: it gets room
- * for a grid of thumbnails, capped at 880px so a large monitor does not stretch
- * the art into a wall. Only this dialog opts in, through `modal-wide`; every
+ * The cover picker is a browsing surface, not a yes/no question: it takes the
+ * width a thumbnail grid actually needs — up to 1280px, which is six portrait
+ * columns at a 1440px window — and the leftover height, capped at 88vh so the
+ * scrim still frames it. Only this dialog opts in, through `modal-wide`; every
  * other dialog keeps the 560px cap above.
  */
 dialog.modal.modal-wide {
-  max-width: min(880px, calc(100vw - 2 * var(--space-lg)));
+  width: min(1280px, calc(100vw - 96px));
+  max-width: min(1280px, calc(100vw - 96px));
+  max-height: min(88vh, 900px);
 }
 
-.cover-picker-card {
-  max-width: 880px;
+/*
+ * A column, so the head and the shape toggle stay compact at the top and the
+ * grid absorbs the rest of the height and scrolls inside it. The dialog bounds
+ * the card, so a long candidate list can never push Cancel off screen.
+ *
+ * `.dialog-card`'s 420px `max-width` is a yes/no-dialog cap; this card has to
+ * fill the wider dialog it is nested in, so it lifts that cap explicitly. The
+ * selector carries the dialog ancestor to outrank `.dialog-card`.
+ */
+dialog.modal .cover-picker-card {
+  display: flex;
+  flex-direction: column;
+  max-width: none;
+  max-height: min(88vh, 900px);
+  min-height: 0;
 }
 
 .cover-picker-head {
@@ -1680,16 +1718,18 @@ dialog.modal.modal-wide {
 }
 
 /*
- * Auto-fill keeps the column count honest at every width: 5 columns inside the
- * 880px dialog, 2 on a 390px phone. The internal scroll bounds the dialog
- * height so a long candidate list never pushes Cancel off screen, and only the
- * vertical axis scrolls, so there is no horizontal overflow to manage.
+ * Auto-fill keeps the column count honest at every width: six columns inside
+ * the 1280px dialog, two on a 390px phone (see the narrow-window override
+ * below). `flex: 1 1 auto` with `min-height: 0` lets the grid take the height
+ * the compact header leaves and scroll in it, so a long candidate list never
+ * pushes Cancel off screen and only the vertical axis scrolls.
  */
 .cover-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: var(--space-xs);
-  max-height: min(60vh, 540px);
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
   margin-top: var(--space-xs);
@@ -1698,7 +1738,27 @@ dialog.modal.modal-wide {
 
 /* Wide art is 920x430, so each tile needs a banner's width to stay legible. */
 .cover-grid-wide {
-  grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+}
+
+/*
+ * Phones: auto-fill would collapse to a single oversized column once the card
+ * is narrower than two 180px tracks, so the narrow window states the counts
+ * instead — two portrait tiles, one wide banner — and keeps a wider gutter.
+ */
+@media (max-width: 560px) {
+  dialog.modal.modal-wide {
+    width: calc(100vw - 2 * var(--space-lg));
+    max-width: calc(100vw - 2 * var(--space-lg));
+  }
+
+  .cover-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .cover-grid-wide {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /*

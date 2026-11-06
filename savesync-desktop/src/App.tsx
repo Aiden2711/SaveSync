@@ -208,6 +208,40 @@ function Modal({
 }
 
 /**
+ * A documentation link inside a helper note.
+ *
+ * The desktop webview drops `target="_blank"` requests (the platform shell has
+ * no new-window handler), so the app's existing convention applies: hand the
+ * URL to a Rust command that opens the system browser, after checking it
+ * against the allowlist of documented pages. The `href` still carries the real
+ * URL so the link reads and copies correctly in a plain browser.
+ */
+function DocsLink({
+  href,
+  onError,
+  children,
+}: {
+  href: string;
+  onError: (message: string) => void;
+  children: ReactNode;
+}) {
+  return (
+    <a
+      className="docs-link"
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      onClick={(event) => {
+        event.preventDefault();
+        void api.openDocsUrl(href).catch((cause) => onError(String(cause)));
+      }}
+    >
+      {children}
+    </a>
+  );
+}
+
+/**
  * Shared attributes for the filled nav glyphs. Each glyph paints in
  * `currentColor` — white, taken from the gradient badge `.nav-icon` draws
  * behind it — so the SVG carries no hue of its own. The badge's
@@ -1795,10 +1829,23 @@ export default function App() {
                   <input
                     value={clientIdDraft}
                     onChange={(event) => setClientIdDraft(event.target.value)}
+                    aria-describedby="google-client-id-note"
                     placeholder="…apps.googleusercontent.com"
                     spellCheck={false}
                   />
                 </label>
+                <p className="muted small" id="google-client-id-note">
+                  A desktop-app client id comes from the{" "}
+                  <DocsLink
+                    href="https://console.cloud.google.com/apis/credentials"
+                    onError={setError}
+                  >
+                    Google Cloud console
+                  </DocsLink>
+                  , and an OAuth consent screen has to be configured there
+                  before one can be created. Requests only the drive.file
+                  scope.
+                </p>
                 <button type="submit" disabled={!!busy}>
                   Save client id
                 </button>
@@ -1822,11 +1869,24 @@ export default function App() {
                   <input
                     value={dropboxAppKeyDraft}
                     onChange={(event) => setDropboxAppKeyDraft(event.target.value)}
+                    aria-describedby="dropbox-app-key-note"
                     placeholder="Dropbox app key"
                     autoComplete="off"
                     spellCheck={false}
                   />
                 </label>
+                <p className="muted small" id="dropbox-app-key-note">
+                  Create an app in the{" "}
+                  <DocsLink
+                    href="https://www.dropbox.com/developers/apps"
+                    onError={setError}
+                  >
+                    Dropbox app console
+                  </DocsLink>
+                  : choose scoped access with the files.content.write and
+                  files.content.read permissions, and app-folder access so
+                  SaveSync only ever sees its own folder.
+                </p>
                 <button type="submit" disabled={!!busy}>
                   Save app key
                 </button>
@@ -1848,11 +1908,23 @@ export default function App() {
                   <input
                     value={webdavEndpointDraft}
                     onChange={(event) => setWebdavEndpointDraft(event.target.value)}
+                    aria-describedby="webdav-endpoint-note"
                     placeholder="https://dav.example.com/savesync"
                     autoComplete="off"
                     spellCheck={false}
                   />
                 </label>
+                <p className="muted small" id="webdav-endpoint-note">
+                  Any HTTPS WebDAV server with Basic authentication works. With
+                  two-factor sign-in enabled on Nextcloud or ownCloud, use an{" "}
+                  <DocsLink
+                    href="https://docs.nextcloud.com/server/latest/user_manual/en/session_management.html#managing-devices"
+                    onError={setError}
+                  >
+                    app password
+                  </DocsLink>
+                  .
+                </p>
                 <label>
                   Username
                   <input
@@ -1876,6 +1948,7 @@ export default function App() {
                     ref={webdavPasswordRef}
                     type="password"
                     defaultValue=""
+                    aria-describedby="webdav-password-note"
                     placeholder={
                       webdav.configured ? "Stored in the OS keyring" : "WebDAV password"
                     }
@@ -1883,7 +1956,7 @@ export default function App() {
                     spellCheck={false}
                   />
                 </label>
-                <p className="muted small">
+                <p className="muted small" id="webdav-password-note">
                   The password is kept in the OS keyring and never written to the
                   SaveSync database or to logs. Leaving the username or password
                   blank keeps the stored value.
@@ -2081,8 +2154,15 @@ export default function App() {
               />
             </label>
             <p className="muted small" id="steamgriddb-note">
-              Used for cover-art lookups. The key is kept in the OS keyring and is
-              never written to the SaveSync database or to logs.
+              Used for cover-art lookups. Get your API key at{" "}
+              <DocsLink
+                href="https://www.steamgriddb.com/profile/preferences/api"
+                onError={setError}
+              >
+                steamgriddb.com/profile/preferences/api
+              </DocsLink>
+              . The key is kept in the OS keyring and is never written to the
+              SaveSync database or to logs.
             </p>
             <div className="row">
               <button className="primary" type="submit" disabled={!!busy}>

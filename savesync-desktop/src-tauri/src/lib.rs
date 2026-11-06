@@ -556,6 +556,38 @@ fn open_auth_url(url: String) -> Result<(), String> {
     open::that(url).map_err(|error| format!("could not open the system browser: {error}"))
 }
 
+/// Documentation pages the credential help notes link to.
+///
+/// The Rust side is the only place that decides what the OS browser may be
+/// asked to open, so this is an exact-match allow-list rather than a host
+/// check: a note can only reach the page it was written for.
+const DOCS_URLS: [&str; 4] = [
+    "https://www.steamgriddb.com/profile/preferences/api",
+    "https://console.cloud.google.com/apis/credentials",
+    "https://www.dropbox.com/developers/apps",
+    "https://docs.nextcloud.com/server/latest/user_manual/en/session_management.html#managing-devices",
+];
+
+/// Whether `url` is one of the documented help pages.
+///
+/// Exact match, so a query string or a path suffix cannot be appended to an
+/// allowed page, and whitespace/control characters are rejected outright so the
+/// value the browser receives is exactly the value that was checked.
+fn is_allowed_docs_url(url: &str) -> bool {
+    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return false;
+    }
+    DOCS_URLS.contains(&url)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn open_docs_url(url: String) -> Result<(), String> {
+    if !is_allowed_docs_url(&url) {
+        return Err("refusing to open an unrecognised documentation URL".into());
+    }
+    open::that(url).map_err(|error| format!("could not open the system browser: {error}"))
+}
+
 #[tauri::command(rename_all = "snake_case")]
 fn disconnect_google(state: tauri::State<'_, AppState>) -> Result<GoogleStatus, String> {
     {
@@ -1797,6 +1829,7 @@ pub fn run() {
             google_status,
             begin_google_oauth,
             open_auth_url,
+            open_docs_url,
             disconnect_google,
             set_dropbox_app_key,
             dropbox_status,
@@ -2175,6 +2208,42 @@ mod tests {
         ));
         assert!(!is_allowed_auth_url(
             "https://accounts.google.com/o/oauth2/v2/auth\n"
+        ));
+    }
+
+    /// The helper notes hand URLs to the same kind of command, so the docs
+    /// allow-list is exact: only the four documented pages, nothing appended.
+    #[test]
+    fn open_docs_url_only_accepts_documented_pages() {
+        for url in DOCS_URLS {
+            assert!(is_allowed_docs_url(url), "{url} should be allowed");
+        }
+
+        assert!(!is_allowed_docs_url("https://evil.test/"));
+        assert!(!is_allowed_docs_url(
+            "https://www.steamgriddb.com/profile/preferences"
+        ));
+        // The old, non-existent key page must stay closed now that the note
+        // points at the real one.
+        assert!(!is_allowed_docs_url(
+            "https://www.steamgriddb.com/profiles/api"
+        ));
+        assert!(!is_allowed_docs_url(
+            "https://www.steamgriddb.com/profile/preferences/api?next=/admin"
+        ));
+        assert!(!is_allowed_docs_url(
+            "https://www.steamgriddb.com/profile/preferences/api/../../admin"
+        ));
+        assert!(!is_allowed_docs_url(
+            "http://www.dropbox.com/developers/apps"
+        ));
+        assert!(!is_allowed_docs_url("file:///etc/passwd"));
+        assert!(!is_allowed_docs_url(""));
+        assert!(!is_allowed_docs_url(
+            "https://www.steamgriddb.com/profile/preferences/api "
+        ));
+        assert!(!is_allowed_docs_url(
+            "https://www.steamgriddb.com/profile/preferences/api\n"
         ));
     }
 

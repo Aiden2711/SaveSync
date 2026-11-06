@@ -479,6 +479,8 @@ const handlers: Record<string, Handler> = {
   // The manual consent-page fallback. The command validates the URL in Rust, so
   // the stub stays a no-op and the call itself is what tests assert on.
   open_auth_url: () => undefined,
+  // Documentation links: same contract — Rust owns the allowlist.
+  open_docs_url: () => undefined,
   disconnect_dropbox: () => {
     dropboxStatus = { ...dropboxStatus, connected: false, pending: false, error: null };
     return dropboxStatus;
