@@ -177,6 +177,22 @@ export interface ScreenScraperStatus {
   user_configured: boolean;
 }
 
+/**
+ * Which IGDB (Twitch application) values are stored, exactly as `IgdbStatus`
+ * serializes. Flags only: neither the client id nor the secret crosses IPC.
+ */
+export interface IgdbStatus {
+  configured: boolean;
+  client_id_configured: boolean;
+  client_secret_configured: boolean;
+}
+
+/**
+ * The source a manual metadata fetch should use. `auto` is not stored anywhere:
+ * it tells the backend to pick ScreenScraper, then IGDB, then Steam.
+ */
+export type MetadataSourcePreference = "auto" | MetadataSource;
+
 export interface AppStatus {
   device: string;
   platform: string;

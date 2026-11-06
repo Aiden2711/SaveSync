@@ -20,6 +20,7 @@ import type {
   Game,
   GameMetadata,
   GoogleStatus,
+  IgdbStatus,
   MetadataSource,
   ProviderKind,
   ProviderStatus,
@@ -267,6 +268,14 @@ let screenscraperStatus: ScreenScraperStatus = defaultScreenscraperStatus();
 /** When set, the next credential save rejects with this generic message. */
 let screenscraperSaveError: string | null = null;
 
+/**
+ * IGDB (Twitch application) credential flags for the stub. Flags only, exactly
+ * like the Rust `IgdbStatus`; the stub never holds either value.
+ */
+let igdbStatus: IgdbStatus = defaultIgdbStatus();
+/** When set, the next IGDB credential save rejects with this generic message. */
+let igdbSaveError: string | null = null;
+
 /** Cached metadata per game id; `fetch_game_metadata` fills it. */
 const metadataCache = new Map<string, GameMetadata>();
 /** When set, the next `fetch_game_metadata` rejects with this message. */
@@ -280,6 +289,16 @@ export function seedScreenscraperStatus(patch: Partial<ScreenScraperStatus>): vo
 /** Makes the next `set_screenscraper_credentials` reject with this message. */
 export function failScreenscraperCredentialSave(message: string): void {
   screenscraperSaveError = message;
+}
+
+/** Seed which IGDB values the settings form should show as saved. */
+export function seedIgdbStatus(patch: Partial<IgdbStatus>): void {
+  igdbStatus = { ...igdbStatus, ...patch };
+}
+
+/** Makes the next `set_igdb_credentials` reject with this message. */
+export function failIgdbCredentialSave(message: string): void {
+  igdbSaveError = message;
 }
 
 /** Makes the next `fetch_game_metadata` reject with this message, then clear it. */
@@ -481,6 +500,15 @@ function defaultScreenscraperStatus(): ScreenScraperStatus {
   return { configured: false, dev_configured: false, user_configured: false };
 }
 
+/** All-false IGDB flags; also the state `clear_igdb_credentials` returns to. */
+function defaultIgdbStatus(): IgdbStatus {
+  return {
+    configured: false,
+    client_id_configured: false,
+    client_secret_configured: false,
+  };
+}
+
 /**
  * Plausible metadata for a fixture game.
  *
@@ -654,9 +682,36 @@ const handlers: Record<string, Handler> = {
     screenscraperStatus = defaultScreenscraperStatus();
     return screenscraperStatus;
   },
+  igdb_status: () => igdbStatus,
+  set_igdb_credentials: (args) => {
+    if (igdbSaveError) {
+      const message = igdbSaveError;
+      igdbSaveError = null;
+      throw new Error(message);
+    }
+    const field = (value: unknown) => (typeof value === "string" ? value.trim() : "");
+    // Blank keeps the stored value, exactly like the command.
+    const idSet = field(args.client_id) !== "" || igdbStatus.client_id_configured;
+    const secretSet =
+      field(args.client_secret) !== "" || igdbStatus.client_secret_configured;
+    if (!idSet || !secretSet) {
+      throw new Error("Enter both the IGDB client id and client secret.");
+    }
+    igdbStatus = {
+      configured: true,
+      client_id_configured: true,
+      client_secret_configured: true,
+    };
+    return igdbStatus;
+  },
+  clear_igdb_credentials: () => {
+    igdbStatus = defaultIgdbStatus();
+    return igdbStatus;
+  },
   /**
-   * Fetch metadata. An omitted source follows the command: ScreenScraper when
-   * credentials are stored, the keyless Steam Store otherwise.
+   * Fetch metadata. An omitted (or `auto`) source follows the command:
+   * ScreenScraper when credentials are stored, then IGDB, then the keyless Steam
+   * Store.
    */
   fetch_game_metadata: (args) => {
     assertKnownGame(args);
@@ -666,9 +721,9 @@ const handlers: Record<string, Handler> = {
       metadataFetchError = null;
       throw new Error(message);
     }
-    const requested = typeof args.source === "string" ? args.source : undefined;
+    const requested = typeof args.source === "string" ? args.source : "auto";
     if (
-      requested !== undefined &&
+      requested !== "auto" &&
       requested !== "steam" &&
       requested !== "screenscraper" &&
       requested !== "igdb"
@@ -676,15 +731,23 @@ const handlers: Record<string, Handler> = {
       throw new Error(`Tauri stub: unknown metadata source "${requested}"`);
     }
     const source: MetadataSource =
-      requested ?? (screenscraperStatus.configured ? "screenscraper" : "steam");
+      requested === "auto"
+        ? screenscraperStatus.configured
+          ? "screenscraper"
+          : igdbStatus.configured
+            ? "igdb"
+            : "steam"
+        : requested;
     if (source === "screenscraper" && !screenscraperStatus.configured) {
       // The command maps core's `Auth` to this generic text, never a value.
       throw new Error(
         "ScreenScraper rejected the saved credentials. Check the developer credentials and, if one is saved, the user account.",
       );
     }
-    if (source === "igdb") {
-      throw new Error("Could not fetch metadata for this game.");
+    if (source === "igdb" && !igdbStatus.configured) {
+      throw new Error(
+        "IGDB credentials are not configured. Add a Twitch client id and secret in Settings.",
+      );
     }
     const metadata = metadataFor(gameId, source);
     metadataCache.set(gameId, metadata);
@@ -795,6 +858,8 @@ export function installTauriStub(): InvokeCall[] {
   coverRevision = 0;
   screenscraperStatus = defaultScreenscraperStatus();
   screenscraperSaveError = null;
+  igdbStatus = defaultIgdbStatus();
+  igdbSaveError = null;
   metadataCache.clear();
   metadataFetchError = null;
 

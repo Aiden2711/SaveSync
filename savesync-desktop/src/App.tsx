@@ -14,7 +14,9 @@ import type {
   GameMetadata,
   GoogleStatus,
   GridCandidate,
+  IgdbStatus,
   MetadataSource,
+  MetadataSourcePreference,
   ProviderKind,
   ProviderStatus,
   Revision,
@@ -117,6 +119,17 @@ const METADATA_SOURCE_LABELS: Record<MetadataSource, string> = {
   screenscraper: "ScreenScraper",
   igdb: "IGDB",
 };
+
+/**
+ * Choices offered next to "Fetch metadata". `auto` leaves the pick to the
+ * backend, which tries ScreenScraper, then IGDB, then the keyless Steam Store.
+ */
+const METADATA_SOURCE_CHOICES: { value: MetadataSourcePreference; label: string }[] = [
+  { value: "auto", label: "Auto" },
+  { value: "steam", label: "Steam" },
+  { value: "screenscraper", label: "ScreenScraper" },
+  { value: "igdb", label: "IGDB" },
+];
 
 /** Busy line for a manual metadata fetch; the detail button reuses the label. */
 const METADATA_BUSY = "Fetching metadata";
@@ -420,7 +433,7 @@ export default function App() {
   });
   /** Non-secret identifiers, held in state the same way a username is. */
   const [ssDevIdDraft, setSsDevIdDraft] = useState("");
-  const [ssSsidDraft, setSsSsidDraft] = useState("");
+  const [ssUsernameDraft, setSsUsernameDraft] = useState("");
   /**
    * Both ScreenScraper passwords are read off the DOM at submit time and never
    * copied into React state, so they cannot be rendered, logged, or surfaced in
@@ -428,8 +441,23 @@ export default function App() {
    */
   const ssDevPasswordRef = useRef<HTMLInputElement>(null);
   const ssUserPasswordRef = useRef<HTMLInputElement>(null);
+  /**
+   * IGDB credential *presence*, never a value. Only the client id is a plain
+   * identifier; the secret is read off the DOM at submit time like the
+   * ScreenScraper passwords.
+   */
+  const [igdb, setIgdb] = useState<IgdbStatus>({
+    configured: false,
+    client_id_configured: false,
+    client_secret_configured: false,
+  });
+  const [igdbClientIdDraft, setIgdbClientIdDraft] = useState("");
+  const igdbClientSecretRef = useRef<HTMLInputElement>(null);
   /** Cached metadata for the open game; null means none has been fetched yet. */
   const [metadata, setMetadata] = useState<GameMetadata | null>(null);
+  /** Which provider a manual fetch asks for; `auto` is the backend's order. */
+  const [metadataSource, setMetadataSource] =
+    useState<MetadataSourcePreference>("auto");
   /** Whether the long description is expanded in the detail panel. */
   const [metadataExpanded, setMetadataExpanded] = useState(false);
   /**
@@ -717,6 +745,9 @@ export default function App() {
    */
   useEffect(() => {
     setMetadataExpanded(false);
+    // Each detail view starts on Auto so a pick made for one game never silently
+    // carries over to the next.
+    setMetadataSource("auto");
     // A different game must never show the previous game's catalogue entry, not
     // even in the frame before the cached read resolves.
     setMetadata(null);
@@ -818,15 +849,21 @@ export default function App() {
       // with them; the drafts are cleared so the next open starts blank too.
       setSteamGridKeyDraft("");
       setSsDevIdDraft("");
-      setSsSsidDraft("");
+      setSsUsernameDraft("");
+      setIgdbClientIdDraft("");
       return;
     }
     let cancelled = false;
-    void Promise.all([api.steamgriddbStatus(), api.screenscraperStatus()])
-      .then(([artwork, credentials]) => {
+    void Promise.all([
+      api.steamgriddbStatus(),
+      api.screenscraperStatus(),
+      api.igdbStatus(),
+    ])
+      .then(([artwork, credentials, catalog]) => {
         if (cancelled) return;
         setArtworkConfigured(artwork.configured);
         setScreenscraper(credentials);
+        setIgdb(catalog);
       })
       .catch((cause) => {
         if (!cancelled) {
@@ -1193,12 +1230,14 @@ export default function App() {
   }
 
   /**
-   * Store the four ScreenScraper values in the OS keyring.
+   * Store the ScreenScraper credentials in the OS keyring.
    *
-   * A blank field keeps the stored value, which is what lets someone change one
-   * credential without retyping the rest. The backend owns the friendly text for
-   * an incomplete pair ("enter both the user SSID and …"), so nothing is
-   * re-implemented and no value is echoed into the banner.
+   * The simple form carries the user's own account; the application-level
+   * developer pair lives in the collapsed Advanced block. A blank field keeps
+   * the stored value, which is what lets someone change one credential without
+   * retyping the rest. The backend owns the friendly text for an incomplete pair
+   * and for a missing developer pair, so nothing is re-implemented here and no
+   * value is echoed into the banner.
    */
   async function saveScreenscraperCredentials(event: FormEvent) {
     event.preventDefault();
@@ -1206,7 +1245,7 @@ export default function App() {
       api.setScreenscraperCredentials(
         ssDevIdDraft.trim(),
         ssDevPasswordRef.current?.value ?? "",
-        ssSsidDraft.trim(),
+        ssUsernameDraft.trim(),
         ssUserPasswordRef.current?.value ?? "",
       ),
     );
@@ -1215,7 +1254,7 @@ export default function App() {
       // Presence flags now describe the stored set, so the drafts go back to
       // placeholders rather than showing a value the UI never received.
       setSsDevIdDraft("");
-      setSsSsidDraft("");
+      setSsUsernameDraft("");
       if (ssDevPasswordRef.current) ssDevPasswordRef.current.value = "";
       if (ssUserPasswordRef.current) ssUserPasswordRef.current.value = "";
       setNotice("ScreenScraper credentials saved in the OS keyring.");
@@ -1229,10 +1268,44 @@ export default function App() {
     if (next) {
       setScreenscraper(next);
       setSsDevIdDraft("");
-      setSsSsidDraft("");
+      setSsUsernameDraft("");
       if (ssDevPasswordRef.current) ssDevPasswordRef.current.value = "";
       if (ssUserPasswordRef.current) ssUserPasswordRef.current.value = "";
       setNotice("ScreenScraper credentials removed from the OS keyring.");
+    }
+  }
+
+  /**
+   * Store the IGDB (Twitch application) credentials in the OS keyring.
+   *
+   * The secret is read off the DOM at submit time, exactly like the
+   * ScreenScraper passwords, so it never enters React state.
+   */
+  async function saveIgdbCredentials(event: FormEvent) {
+    event.preventDefault();
+    const next = await run("Saving IGDB credentials", () =>
+      api.setIgdbCredentials(
+        igdbClientIdDraft.trim(),
+        igdbClientSecretRef.current?.value ?? "",
+      ),
+    );
+    if (next) {
+      setIgdb(next);
+      setIgdbClientIdDraft("");
+      if (igdbClientSecretRef.current) igdbClientSecretRef.current.value = "";
+      setNotice("IGDB credentials saved in the OS keyring.");
+    }
+  }
+
+  async function clearIgdbCredentials() {
+    const next = await run("Clearing IGDB credentials", () =>
+      api.clearIgdbCredentials(),
+    );
+    if (next) {
+      setIgdb(next);
+      setIgdbClientIdDraft("");
+      if (igdbClientSecretRef.current) igdbClientSecretRef.current.value = "";
+      setNotice("IGDB credentials removed from the OS keyring.");
     }
   }
 
@@ -1242,7 +1315,9 @@ export default function App() {
    * leaves the cached panel exactly as it was.
    */
   async function fetchGameMetadata(game: Game) {
-    const next = await run(METADATA_BUSY, () => api.fetchGameMetadata(game.id));
+    const next = await run(METADATA_BUSY, () =>
+      api.fetchGameMetadata(game.id, metadataSource),
+    );
     if (next) {
       setMetadata(next);
       setMetadataExpanded(false);
@@ -1867,12 +1942,27 @@ export default function App() {
                 description shown on the store page.
               </p>
             )}
-            <div className="row">
+            <div className="metadata-actions">
+              <select
+                aria-label="Metadata source"
+                value={metadataSource}
+                onChange={(event) =>
+                  setMetadataSource(event.target.value as MetadataSourcePreference)
+                }
+                disabled={!!busy}
+                title="Which provider to look the game up with"
+              >
+                {METADATA_SOURCE_CHOICES.map((choice) => (
+                  <option key={choice.value} value={choice.value}>
+                    {choice.label}
+                  </option>
+                ))}
+              </select>
               <button
                 className="ghost"
                 type="button"
                 disabled={!!busy}
-                title="Look the game up with the configured metadata source"
+                title="Look the game up with the chosen metadata source"
                 onClick={() => void fetchGameMetadata(game)}
               >
                 {busy === METADATA_BUSY ? "Fetching…" : "Fetch metadata"}
@@ -2421,106 +2511,112 @@ export default function App() {
             <span
               className={screenscraper.dev_configured ? "status on" : "status"}
             >
-              {screenscraper.dev_configured
-                ? screenscraper.user_configured
-                  ? "Developer and user saved"
-                  : "Developer credentials saved"
-                : "Not set up"}
+              {screenscraper.user_configured
+                ? "Signed in"
+                : screenscraper.dev_configured
+                  ? "Available"
+                  : "Not set up"}
             </span>
           </div>
           <p className="muted small">
-            Alternative metadata source, used first once it is configured.
-            ScreenScraper needs a developer pair; a user account only raises the
-            request quota.
+            Alternative metadata source, used first once it is configured. A
+            ScreenScraper account raises the request quota; SaveSync supplies the
+            application's own developer credentials.
           </p>
           <form className="stack" onSubmit={saveScreenscraperCredentials}>
             <label>
-              Dev ID
+              Username
               <input
-                value={ssDevIdDraft}
-                onChange={(event) => setSsDevIdDraft(event.target.value)}
-                aria-label="ScreenScraper dev id"
-                aria-describedby="screenscraper-dev-note"
-                placeholder={
-                  screenscraper.dev_configured
-                    ? "Stored in the OS keyring"
-                    : "ScreenScraper developer id"
-                }
-                autoComplete="off"
-                spellCheck={false}
-              />
-            </label>
-            <label>
-              Dev password
-              <input
-                type="password"
-                ref={ssDevPasswordRef}
-                aria-label="ScreenScraper dev password"
-                aria-describedby="screenscraper-dev-note"
-                placeholder={
-                  screenscraper.dev_configured
-                    ? "Stored in the OS keyring"
-                    : "Developer password"
-                }
-                autoComplete="off"
-                spellCheck={false}
-              />
-            </label>
-            <p className="muted small" id="screenscraper-dev-note">
-              Required. Request a developer account in the{" "}
-              <DocsLink
-                href="https://www.screenscraper.fr/forumsujets.php?frub=12"
-                onError={setError}
-              >
-                ScreenScraper developer forum
-              </DocsLink>
-              . Leave a field blank to keep the value already stored. All four
-              values live in the OS keyring, never in the SaveSync database or
-              logs.
-            </p>
-            <label>
-              User SSID
-              <input
-                value={ssSsidDraft}
-                onChange={(event) => setSsSsidDraft(event.target.value)}
-                aria-label="ScreenScraper user SSID"
+                value={ssUsernameDraft}
+                onChange={(event) => setSsUsernameDraft(event.target.value)}
+                aria-label="ScreenScraper username"
                 aria-describedby="screenscraper-user-note"
                 placeholder={
                   screenscraper.user_configured
                     ? "Stored in the OS keyring"
-                    : "ScreenScraper user SSID (optional)"
-                }
-                autoComplete="off"
-                spellCheck={false}
-              />
-            </label>
-            <label>
-              User SS password
-              <input
-                type="password"
-                ref={ssUserPasswordRef}
-                aria-label="ScreenScraper user SS password"
-                aria-describedby="screenscraper-user-note"
-                placeholder={
-                  screenscraper.user_configured
-                    ? "Stored in the OS keyring"
-                    : "User SS password (optional)"
+                    : "ScreenScraper username"
                 }
                 autoComplete="off"
                 spellCheck={false}
               />
             </label>
             <p className="muted small" id="screenscraper-user-note">
-              Optional. A ScreenScraper user account raises the request quota;
-              create one at{" "}
+              Create a free account at{" "}
               <DocsLink
                 href="https://www.screenscraper.fr/membreinscription.php"
                 onError={setError}
               >
                 screenscraper.fr/membreinscription.php
               </DocsLink>
-              .
+              . Leave a field blank to keep the value already stored.
             </p>
+            <label>
+              Password
+              <input
+                type="password"
+                ref={ssUserPasswordRef}
+                aria-label="ScreenScraper password"
+                aria-describedby="screenscraper-user-note"
+                placeholder={
+                  screenscraper.user_configured
+                    ? "Stored in the OS keyring"
+                    : "ScreenScraper password"
+                }
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+            <details className="advanced-credentials">
+              <summary>Advanced</summary>
+              <p className="muted small">
+                Most users do not need these: SaveSync supplies its own default
+                developer credentials. Set them only if you run your own
+                ScreenScraper developer account.
+              </p>
+              <label>
+                Dev ID
+                <input
+                  value={ssDevIdDraft}
+                  onChange={(event) => setSsDevIdDraft(event.target.value)}
+                  aria-label="ScreenScraper dev id"
+                  aria-describedby="screenscraper-dev-note"
+                  placeholder={
+                    screenscraper.dev_configured
+                      ? "Stored in the OS keyring"
+                      : "ScreenScraper developer id"
+                  }
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </label>
+              <label>
+                Dev password
+                <input
+                  type="password"
+                  ref={ssDevPasswordRef}
+                  aria-label="ScreenScraper dev password"
+                  aria-describedby="screenscraper-dev-note"
+                  placeholder={
+                    screenscraper.dev_configured
+                      ? "Stored in the OS keyring"
+                      : "Developer password"
+                  }
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </label>
+              <p className="muted small" id="screenscraper-dev-note">
+                Request developer credentials in the{" "}
+                <DocsLink
+                  href="https://www.screenscraper.fr/forumsujets.php?frub=12"
+                  onError={setError}
+                >
+                  ScreenScraper developer forum
+                </DocsLink>
+                . A blank field keeps the value already stored. Every value lives
+                in the OS keyring, never in the SaveSync database or logs.
+              </p>
+            </details>
             <div className="row">
               <button className="primary" type="submit" disabled={!!busy}>
                 Save credentials
@@ -2530,6 +2626,76 @@ export default function App() {
                 onClick={() => void clearScreenscraperCredentials()}
                 disabled={!!busy || !screenscraper.configured}
                 title="Remove the ScreenScraper credentials from the OS keyring"
+              >
+                Clear
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <section className="panel" aria-labelledby="settings-igdb">
+          <div className="panel-title">
+            <h2 id="settings-igdb">IGDB</h2>
+            <span className={igdb.configured ? "status on" : "status"}>
+              {igdb.configured ? "Configured" : "Not set up"}
+            </span>
+          </div>
+          <p className="muted small">
+            Metadata source for games the other providers cannot match. IGDB is
+            reached through a Twitch application you own.
+          </p>
+          <form className="stack" onSubmit={saveIgdbCredentials}>
+            <label>
+              Client ID
+              <input
+                value={igdbClientIdDraft}
+                onChange={(event) => setIgdbClientIdDraft(event.target.value)}
+                aria-label="IGDB client id"
+                aria-describedby="igdb-console-note"
+                placeholder={
+                  igdb.client_id_configured
+                    ? "Stored in the OS keyring"
+                    : "Twitch application client id"
+                }
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+            <label>
+              Client secret
+              <input
+                type="password"
+                ref={igdbClientSecretRef}
+                aria-label="IGDB client secret"
+                aria-describedby="igdb-console-note"
+                placeholder={
+                  igdb.client_secret_configured
+                    ? "Stored in the OS keyring"
+                    : "Twitch application client secret"
+                }
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+            <p className="muted small" id="igdb-console-note">
+              <DocsLink
+                href="https://dev.twitch.tv/console/apps/create"
+                onError={setError}
+              >
+                Create a Twitch app to get a client id and secret
+              </DocsLink>
+              . Both are kept in the OS keyring and are never written to the
+              SaveSync database or to logs.
+            </p>
+            <div className="row">
+              <button className="primary" type="submit" disabled={!!busy}>
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={() => void clearIgdbCredentials()}
+                disabled={!!busy || !igdb.configured}
+                title="Remove the IGDB credentials from the OS keyring"
               >
                 Clear
               </button>

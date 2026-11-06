@@ -10,7 +10,8 @@ import type {
   Game,
   GameMetadata,
   GoogleStatus,
-  MetadataSource,
+  IgdbStatus,
+  MetadataSourcePreference,
   OAuthStart,
   ProviderKind,
   ProviderStatus,
@@ -97,13 +98,14 @@ export const api = {
   /**
    * Fetch and cache metadata for one game, then return the stored row.
    *
-   * `source` is omitted from the IPC payload when not chosen, so the Rust side
-   * picks the default (ScreenScraper when configured, Steam otherwise).
+   * `auto` (the default) omits the source from the IPC payload, so the Rust
+   * side keeps choosing: ScreenScraper once configured, then IGDB, then the
+   * keyless Steam Store. An explicit id forces exactly that provider.
    */
-  fetchGameMetadata: (game_id: string, source?: MetadataSource) =>
-    source
-      ? invoke<GameMetadata>("fetch_game_metadata", { game_id, source })
-      : invoke<GameMetadata>("fetch_game_metadata", { game_id }),
+  fetchGameMetadata: (game_id: string, source: MetadataSourcePreference = "auto") =>
+    source === "auto"
+      ? invoke<GameMetadata>("fetch_game_metadata", { game_id })
+      : invoke<GameMetadata>("fetch_game_metadata", { game_id, source }),
 
   /** Cached metadata only: no network request, so it works offline. */
   gameMetadata: (game_id: string) =>
@@ -133,6 +135,19 @@ export const api = {
 
   clearScreenscraperCredentials: () =>
     invoke<ScreenScraperStatus>("clear_screenscraper_credentials"),
+
+  /**
+   * Store the IGDB (Twitch application) client id and secret in the OS keyring.
+   *
+   * A blank field keeps the stored value. Returns flags only: neither value is
+   * ever sent back to the UI.
+   */
+  setIgdbCredentials: (client_id: string, client_secret: string) =>
+    invoke<IgdbStatus>("set_igdb_credentials", { client_id, client_secret }),
+
+  igdbStatus: () => invoke<IgdbStatus>("igdb_status"),
+
+  clearIgdbCredentials: () => invoke<IgdbStatus>("clear_igdb_credentials"),
 
   fetchCoverArt: (game_id: string) => invoke<Game>("fetch_cover_art", { game_id }),
 

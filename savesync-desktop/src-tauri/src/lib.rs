@@ -14,9 +14,10 @@ use std::time::Duration;
 use savesync_core::{
     AdapterType, Conflict, CoverSearch, DROPBOX_ACCOUNT, DiscoveredGame, DropboxProvider,
     GRID_UNAVAILABLE_MESSAGE, Game, GameMetadata, GoogleDriveProvider, GridKind, HttpTransport,
-    KeyringTokenStore, MemoryTokenStore, MetadataSource, OAuthConfig, OAuthFlow, ReqwestTransport,
-    RestoreReport, Revision, SaveSyncEngine, SaveWatcher, ScreenScraperCredentials, SnapshotInfo,
-    SteamGridDbClient, SyncReport, TokenStore, WEBDAV_ACCOUNT, WebDavProvider, provider_for_with,
+    IgdbCredentials, KeyringTokenStore, MemoryTokenStore, MetadataCreds, MetadataSource,
+    OAuthConfig, OAuthFlow, ReqwestTransport, RestoreReport, Revision, SaveSyncEngine, SaveWatcher,
+    ScreenScraperCredentials, SnapshotInfo, SteamGridDbClient, SyncReport, TokenStore,
+    WEBDAV_ACCOUNT, WebDavProvider, provider_for_with, provider_for_with_creds,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -46,6 +47,38 @@ const SCREENSCRAPER_USER_SSPASSWORD_ACCOUNT: &str = "screenscraper-user-sspasswo
 /// Bound on untrusted IPC input so a pathological payload cannot be pushed into
 /// the OS keyring. The real values are short ids and passwords.
 const SCREENSCRAPER_VALUE_MAX_LEN: usize = 256;
+
+/// Environment overrides for the application-level ScreenScraper developer
+/// pair. They exist for developer builds and support hand-offs; a normal
+/// install uses the compiled-in constants below.
+const SCREENSCRAPER_DEV_ID_ENV: &str = "SAVESYNC_SCREENSCRAPER_DEV_ID";
+const SCREENSCRAPER_DEV_PASSWORD_ENV: &str = "SAVESYNC_SCREENSCRAPER_DEV_PASSWORD";
+
+/// Application-level ScreenScraper developer credentials, compiled into the
+/// build RomM-style: the user only signs in with their own ScreenScraper
+/// account, and the application identity is supplied here.
+///
+/// TODO: fill these in after the project registers for developer credentials
+/// at <https://www.screenscraper.fr/forumsujets.php?frub=12>. They are empty on
+/// purpose in an unregistered build: ScreenScraper refuses every request
+/// without them, so the UI reports that instead of sending a doomed one.
+const SCREENSCRAPER_DEV_ID: &str = "";
+const SCREENSCRAPER_DEV_PASSWORD: &str = "";
+
+/// Shown when no developer pair resolves at all. Deliberately free of
+/// internals: it names the missing configuration, not a URL or a value.
+const SCREENSCRAPER_DEV_MISSING: &str =
+    "ScreenScraper developer credentials are not configured in this build.";
+
+/// Keyring accounts for the two IGDB (Twitch application) values. One item per
+/// field, so a blank form field can keep the value it does not own.
+const IGDB_CLIENT_ID_ACCOUNT: &str = "igdb-client-id";
+const IGDB_CLIENT_SECRET_ACCOUNT: &str = "igdb-client-secret";
+/// Bound on untrusted IPC input; a Twitch client id/secret is 30 characters.
+const IGDB_VALUE_MAX_LEN: usize = 512;
+/// Shown when IGDB is asked for without a stored Twitch application.
+const IGDB_MISSING: &str =
+    "IGDB credentials are not configured. Add a Twitch client id and secret in Settings.";
 
 const OAUTH_TIMEOUT: Duration = Duration::from_secs(300);
 /// Cover-art downloads are bounded by the transport, not left to hang.
@@ -91,6 +124,10 @@ struct Inner {
     screenscraper_dev_password: Arc<dyn TokenStore>,
     screenscraper_user_ssid: Arc<dyn TokenStore>,
     screenscraper_user_sspassword: Arc<dyn TokenStore>,
+    /// IGDB (Twitch application) client id and secret. One keyring item each, so
+    /// a partially filled form can keep the field it did not retype.
+    igdb_client_id: Arc<dyn TokenStore>,
+    igdb_client_secret: Arc<dyn TokenStore>,
     transport: Arc<dyn HttpTransport>,
     client_id: Mutex<Option<String>>,
     oauth: Mutex<OAuthRuntime>,
@@ -202,6 +239,18 @@ struct ScreenScraperStatus {
     configured: bool,
     dev_configured: bool,
     user_configured: bool,
+}
+
+/// Which IGDB (Twitch application) values are stored in the OS keyring.
+///
+/// Flags only, exactly like [`ScreenScraperStatus`]: neither the client id nor
+/// the secret — nor its length — crosses IPC. `configured` reports whether IGDB
+/// can be used at all; the per-field flags let the form show what is saved.
+#[derive(Debug, Default, Serialize)]
+struct IgdbStatus {
+    configured: bool,
+    client_id_configured: bool,
+    client_secret_configured: bool,
 }
 
 #[derive(Serialize)]
@@ -596,7 +645,7 @@ fn open_auth_url(url: String) -> Result<(), String> {
 /// The Rust side is the only place that decides what the OS browser may be
 /// asked to open, so this is an exact-match allow-list rather than a host
 /// check: a note can only reach the page it was written for.
-const DOCS_URLS: [&str; 6] = [
+const DOCS_URLS: [&str; 7] = [
     "https://www.steamgriddb.com/profile/preferences/api",
     "https://console.cloud.google.com/apis/credentials",
     "https://www.dropbox.com/developers/apps",
@@ -605,6 +654,9 @@ const DOCS_URLS: [&str; 6] = [
     // an end user creates the account that raises the request quota.
     "https://www.screenscraper.fr/forumsujets.php?frub=12",
     "https://www.screenscraper.fr/membreinscription.php",
+    // Where an IGDB user creates the Twitch application whose client id and
+    // secret the metadata provider exchanges for an access token.
+    "https://dev.twitch.tv/console/apps/create",
 ];
 
 /// Whether `url` is one of the documented help pages.
@@ -1246,15 +1298,36 @@ impl std::fmt::Debug for StoredScreenScraper {
 }
 
 impl StoredScreenScraper {
-    /// Build provider credentials, or `None` when the required developer pair is
-    /// incomplete.
+    /// The keyring-stored developer pair, when both halves are present.
+    fn developer_pairs(&self) -> Option<(&str, &str)> {
+        Some((self.dev_id.as_deref()?, self.dev_password.as_deref()?))
+    }
+
+    /// Build provider credentials from the keyring values only.
     ///
-    /// An incomplete user account is dropped instead of sent: core rejects a half
-    /// pair, and a partial pair would otherwise fail every fetch. That state is
-    /// only reachable after an interrupted write, so the warning the write
-    /// returned is what the user acts on.
+    /// An incomplete user account is dropped instead of sent: core rejects a
+    /// half pair, and a partial pair would otherwise fail every fetch. That
+    /// state is only reachable after an interrupted write, so the warning the
+    /// write returned is what the user acts on.
+    ///
+    /// Test seam: the command path always supplies the developer pair from
+    /// [`developer_pair`], so production code calls `credentials_with` instead.
+    #[cfg(test)]
     fn credentials(&self) -> Option<ScreenScraperCredentials> {
-        let (dev_id, dev_password) = (self.dev_id.as_deref()?, self.dev_password.as_deref()?);
+        self.credentials_with(self.developer_pairs())
+    }
+
+    /// Same, but with a developer pair supplied by the caller.
+    ///
+    /// A normal install ships its developer pair (see
+    /// [`SCREENSCRAPER_DEV_ID`]), so the keyring only holds the user's own
+    /// account and the pair comes from the build, the environment, or the
+    /// Advanced override — never from a value the user types on the main form.
+    fn credentials_with(
+        &self,
+        developer: Option<(&str, &str)>,
+    ) -> Option<ScreenScraperCredentials> {
+        let (dev_id, dev_password) = developer?;
         let mut credentials = ScreenScraperCredentials::developer(dev_id, dev_password);
         if let (Some(ssid), Some(sspassword)) = (self.ssid.as_deref(), self.sspassword.as_deref()) {
             credentials = credentials.with_user(ssid, sspassword);
@@ -1264,15 +1337,24 @@ impl StoredScreenScraper {
 }
 
 impl ScreenScraperStatus {
+    /// Status from the keyring values alone, with the developer pair required to
+    /// come from there too. Used by tests and by a keyring-only view.
+    ///
+    /// Test seam: every real caller knows whether a build or environment default
+    /// resolved, so it calls `with_developer` instead.
+    #[cfg(test)]
     fn from_stored(stored: &StoredScreenScraper) -> Self {
-        let dev_configured = stored.dev_id.is_some() && stored.dev_password.is_some();
-        let user_configured = stored.ssid.is_some() && stored.sspassword.is_some();
+        Self::with_developer(stored, stored.developer_pairs().is_some())
+    }
+
+    /// Status where the developer pair may come from the build or environment.
+    fn with_developer(stored: &StoredScreenScraper, developer_available: bool) -> Self {
         Self {
-            // The developer pair is the minimum ScreenScraper needs; the user
+            // ScreenScraper cannot be called without a developer pair; the user
             // account only raises the request quota.
-            configured: dev_configured,
-            dev_configured,
-            user_configured,
+            configured: developer_available,
+            dev_configured: developer_available,
+            user_configured: stored.ssid.is_some() && stored.sspassword.is_some(),
         }
     }
 }
@@ -1304,17 +1386,105 @@ fn effective_secret(typed: &str, stored: Option<String>) -> Option<String> {
     }
 }
 
-/// Apply the partial-pair semantics to one submitted credential form.
+/// Where the application-level ScreenScraper developer pair came from.
+///
+/// The user's explicit Advanced entry always wins: an unregistered build ships
+/// no pair, and even a build that ships one must not override a user who
+/// supplies their own. Reported only as a class, never with a value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeveloperSource {
+    /// The Advanced form entry, stored in the OS keyring.
+    Keyring,
+    /// `SAVESYNC_SCREENSCRAPER_DEV_ID` / `SAVESYNC_SCREENSCRAPER_DEV_PASSWORD`.
+    Environment,
+    /// The pair compiled into this build.
+    Build,
+}
+
+/// Both halves of a pair, trimmed, or `None` when either is blank.
+///
+/// A half-configured override is treated as absent rather than sent:
+/// ScreenScraper rejects a pair with an empty half, and a blank environment
+/// variable is how a shell reports "unset" often enough to matter.
+fn complete_pair<'a>(id: &'a str, password: &'a str) -> Option<(&'a str, &'a str)> {
+    let (id, password) = (id.trim(), password.trim());
+    if id.is_empty() || password.is_empty() {
+        return None;
+    }
+    Some((id, password))
+}
+
+/// Resolve the application developer pair by precedence.
+///
+/// Order is fixed and deliberate: the user's Advanced entry (the keyring) beats
+/// the environment, which beats the pair compiled into the build. The values are
+/// returned owned because they may come from a temporary environment read, and
+/// the source is returned so a caller can tell the user which default applied.
+///
+/// Pure by construction — no keyring, environment, or file access — so the
+/// precedence itself is directly testable.
+fn resolve_developer_pair(
+    keyring: Option<(&str, &str)>,
+    env: Option<(&str, &str)>,
+    build: Option<(&str, &str)>,
+) -> Option<(String, String, DeveloperSource)> {
+    let candidates = [
+        (keyring, DeveloperSource::Keyring),
+        (env, DeveloperSource::Environment),
+        (build, DeveloperSource::Build),
+    ];
+    let ((id, password), source) = candidates.into_iter().find_map(|(pair, source)| {
+        let (id, password) = complete_pair(pair?.0, pair?.1)?;
+        Some(((id, password), source))
+    })?;
+    Some((id.to_string(), password.to_string(), source))
+}
+
+/// The environment pair, when both variables are set and non-blank.
+fn environment_developer_pair() -> Option<(String, String)> {
+    let id = std::env::var(SCREENSCRAPER_DEV_ID_ENV).ok()?;
+    let password = std::env::var(SCREENSCRAPER_DEV_PASSWORD_ENV).ok()?;
+    complete_pair(&id, &password).map(|(id, password)| (id.to_string(), password.to_string()))
+}
+
+/// The pair compiled into this build, when it is not the empty placeholder.
+fn build_developer_pair() -> Option<(&'static str, &'static str)> {
+    complete_pair(SCREENSCRAPER_DEV_ID, SCREENSCRAPER_DEV_PASSWORD)
+}
+
+/// The pair a request would use right now, given the stored keyring values.
+///
+/// Reads the environment at call time, so a developer can export the variables
+/// and restart the shell without rebuilding.
+fn developer_pair(stored: &StoredScreenScraper) -> Option<(String, String, DeveloperSource)> {
+    let environment = environment_developer_pair();
+    resolve_developer_pair(
+        stored.developer_pairs(),
+        environment
+            .as_ref()
+            .map(|(id, password)| (id.as_str(), password.as_str())),
+        build_developer_pair(),
+    )
+}
+
+/// Apply the partial-pair semantics to one submitted ScreenScraper form.
 ///
 /// Every blank field keeps its stored value; the result is then checked for the
-/// two mistakes a user actually makes. Both messages are the friendly text the
+/// mistakes a user actually makes. Both messages are the friendly text the
 /// settings form shows and deliberately contain no credential value.
-fn resolve_screenscraper_credentials(
+///
+/// `developer_required` is `false` when the environment or this build already
+/// supplies the application pair: the Advanced fields are then optional, and an
+/// empty submission is accepted because nothing has to be stored. It is `true`
+/// when the keyring is the only possible source, so a build without a pair
+/// cannot save a form that could never fetch anything.
+fn resolve_screenscraper_form(
     stored: &StoredScreenScraper,
     dev_id: &str,
     dev_password: &str,
     ssid: &str,
     sspassword: &str,
+    developer_required: bool,
 ) -> Result<StoredScreenScraper, String> {
     let next = StoredScreenScraper {
         dev_id: effective_secret(dev_id, stored.dev_id.clone()),
@@ -1323,7 +1493,7 @@ fn resolve_screenscraper_credentials(
         sspassword: effective_secret(sspassword, stored.sspassword.clone()),
     };
 
-    if next.dev_id.is_none() || next.dev_password.is_none() {
+    if developer_required && next.developer_pairs().is_none() {
         return Err("Enter the ScreenScraper dev id and dev password.".into());
     }
     // The user account is optional, but half of one is a configuration error:
@@ -1349,6 +1519,25 @@ fn resolve_screenscraper_credentials(
     }
 
     Ok(next)
+}
+
+/// The keyring-only form of [`resolve_screenscraper_form`].
+///
+/// Kept as the compatibility wrapper: a caller with no build or environment
+/// pair — every test, and any future caller that does not know about the
+/// default — keeps the strict "a developer pair must be stored" semantics.
+///
+/// Test seam: the command derives `developer_required` from
+/// [`developer_pair`], so production code calls `resolve_screenscraper_form`.
+#[cfg(test)]
+fn resolve_screenscraper_credentials(
+    stored: &StoredScreenScraper,
+    dev_id: &str,
+    dev_password: &str,
+    ssid: &str,
+    sspassword: &str,
+) -> Result<StoredScreenScraper, String> {
+    resolve_screenscraper_form(stored, dev_id, dev_password, ssid, sspassword, true)
 }
 
 /// Reject a credential set core would reject, before anything is persisted.
@@ -1388,14 +1577,15 @@ fn restore_secrets(changes: &[SecretChange<'_>]) -> Result<(), ()> {
     if complete { Ok(()) } else { Err(()) }
 }
 
-/// Persist the ScreenScraper credential fields, restoring every entry a failure
-/// left changed.
+/// Persist a set of credential fields, restoring every entry a failure left
+/// changed.
 ///
 /// Each field is its own keyring item, so a failure halfway through would
-/// otherwise leave a new developer password next to the old developer id. Every
-/// error is the same generic message plus, only when the rollback itself failed,
-/// the shared [`ROLLBACK_INCOMPLETE_HINT`]; no branch can echo a value.
-fn persist_screenscraper_credentials(changes: &[SecretChange<'_>]) -> Result<(), String> {
+/// otherwise leave a new secret next to a stale sibling. `message` names the
+/// credential set in the failure text; every error is that same generic message
+/// plus, only when the rollback itself failed, the shared
+/// [`ROLLBACK_INCOMPLETE_HINT`]. No branch can echo a value.
+fn persist_secrets(changes: &[SecretChange<'_>], message: &str) -> Result<(), String> {
     // Entries that have to be undone if a later write fails.
     let mut applied: Vec<SecretChange<'_>> = Vec::new();
     for (store, prior, next) in changes {
@@ -1414,12 +1604,155 @@ fn persist_screenscraper_credentials(changes: &[SecretChange<'_>]) -> Result<(),
         applied.push((*store, prior.clone(), next.clone()));
         if written.is_err() {
             return Err(persist_error(
-                "Could not save the ScreenScraper credentials to the OS keyring.".to_string(),
+                message.to_string(),
                 restore_secrets(&applied),
             ));
         }
     }
     Ok(())
+}
+
+/// Persist the ScreenScraper credential fields.
+fn persist_screenscraper_credentials(changes: &[SecretChange<'_>]) -> Result<(), String> {
+    persist_secrets(
+        changes,
+        "Could not save the ScreenScraper credentials to the OS keyring.",
+    )
+}
+
+/// The keyring changes one ScreenScraper submission implies, one entry per field.
+///
+/// Only a value that is stored or was typed appears here. A developer pair from
+/// the environment or the build is used for validation and then dropped, so a
+/// default can never be laundered into the keyring and shadow a future build
+/// default.
+fn screenscraper_changes<'a>(
+    stores: [&'a dyn TokenStore; 4],
+    stored: StoredScreenScraper,
+    next: &StoredScreenScraper,
+) -> [SecretChange<'a>; 4] {
+    [
+        (stores[0], stored.dev_id, next.dev_id.clone()),
+        (stores[1], stored.dev_password, next.dev_password.clone()),
+        (stores[2], stored.ssid, next.ssid.clone()),
+        (stores[3], stored.sspassword, next.sspassword.clone()),
+    ]
+}
+
+/// Persist the IGDB (Twitch application) fields.
+fn persist_igdb_credentials(changes: &[SecretChange<'_>]) -> Result<(), String> {
+    persist_secrets(
+        changes,
+        "Could not save the IGDB credentials to the OS keyring.",
+    )
+}
+
+/// The two IGDB (Twitch application) values as they are stored right now.
+///
+/// Held only for one command: it exists so a write can roll back to exactly the
+/// previous values and so status can be derived without a second keyring
+/// round-trip. It never derives `Serialize`, and its `Debug` prints presence
+/// flags only — a derived one would put the client secret in a log line.
+#[derive(Default)]
+struct StoredIgdb {
+    client_id: Option<String>,
+    client_secret: Option<String>,
+}
+
+impl std::fmt::Debug for StoredIgdb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Presence only. Never the value, and never its length.
+        f.debug_struct("StoredIgdb")
+            .field("client_id", &self.client_id.is_some())
+            .field("client_secret", &self.client_secret.is_some())
+            .finish()
+    }
+}
+
+impl StoredIgdb {
+    /// The pair, when both halves are present.
+    ///
+    /// A Twitch application has exactly one client id and one secret, so a half
+    /// pair is a configuration error rather than something to send.
+    fn pairs(&self) -> Option<(&str, &str)> {
+        Some((self.client_id.as_deref()?, self.client_secret.as_deref()?))
+    }
+
+    /// Build provider credentials, or `None` when the application is incomplete.
+    fn credentials(&self) -> Option<IgdbCredentials> {
+        let (client_id, client_secret) = self.pairs()?;
+        Some(IgdbCredentials::new(client_id, client_secret))
+    }
+}
+
+impl IgdbStatus {
+    /// Status from the stored values: flags only, never a value or a length.
+    fn from_stored(stored: &StoredIgdb) -> Self {
+        let client_id_configured = stored.client_id.is_some();
+        let client_secret_configured = stored.client_secret.is_some();
+        Self {
+            configured: client_id_configured && client_secret_configured,
+            client_id_configured,
+            client_secret_configured,
+        }
+    }
+}
+
+/// Read one IGDB keyring entry.
+///
+/// The keyring error is discarded rather than forwarded, exactly like the
+/// ScreenScraper reader: it is not guaranteed secret-free.
+fn load_igdb_secret(store: &dyn TokenStore) -> Result<Option<String>, String> {
+    store
+        .load()
+        .map_err(|_| "Could not read the IGDB credentials from the OS keyring.".to_string())
+}
+
+/// Apply the partial-pair semantics to one submitted IGDB form.
+///
+/// A blank field keeps the stored value, so rotating only the secret does not
+/// require retyping the id. Both halves are then required, because core rejects
+/// a half pair and a partial set would fail every fetch.
+fn resolve_igdb_credentials(
+    stored: &StoredIgdb,
+    client_id: &str,
+    client_secret: &str,
+) -> Result<StoredIgdb, String> {
+    let next = StoredIgdb {
+        client_id: effective_secret(client_id, stored.client_id.clone()),
+        client_secret: effective_secret(client_secret, stored.client_secret.clone()),
+    };
+
+    if next.pairs().is_none() {
+        return Err("Enter both the IGDB client id and client secret.".into());
+    }
+
+    let values = [next.client_id.as_ref(), next.client_secret.as_ref()];
+    if values
+        .into_iter()
+        .flatten()
+        .any(|value| value.chars().count() > IGDB_VALUE_MAX_LEN)
+    {
+        return Err(format!(
+            "IGDB credentials may be at most {IGDB_VALUE_MAX_LEN} characters."
+        ));
+    }
+
+    Ok(next)
+}
+
+/// Reject an IGDB credential set core would reject, before anything is persisted.
+///
+/// Validation only: the provider is built and dropped immediately. Core's
+/// `Auth` errors describe the shape of the set and never echo a value.
+fn validate_igdb_credentials(credentials: &IgdbCredentials) -> Result<(), String> {
+    provider_for_with_creds(
+        MetadataSource::Igdb,
+        None,
+        MetadataCreds::igdb(Some(credentials)),
+    )
+    .map(|_| ())
+    .map_err(stringify)
 }
 
 impl Inner {
@@ -1439,14 +1772,38 @@ impl Inner {
         })
     }
 
+    /// Every stored IGDB value, read once per command.
+    fn stored_igdb(&self) -> Result<StoredIgdb, String> {
+        Ok(StoredIgdb {
+            client_id: load_igdb_secret(self.igdb_client_id.as_ref())?,
+            client_secret: load_igdb_secret(self.igdb_client_secret.as_ref())?,
+        })
+    }
+
     fn screenscraper_status(&self) -> Result<ScreenScraperStatus, String> {
-        Ok(ScreenScraperStatus::from_stored(
-            &self.stored_screenscraper()?,
+        let stored = self.stored_screenscraper()?;
+        Ok(ScreenScraperStatus::with_developer(
+            &stored,
+            developer_pair(&stored).is_some(),
         ))
     }
 
     fn screenscraper_credentials(&self) -> Result<Option<ScreenScraperCredentials>, String> {
-        Ok(self.stored_screenscraper()?.credentials())
+        let stored = self.stored_screenscraper()?;
+        let developer = developer_pair(&stored);
+        Ok(stored.credentials_with(
+            developer
+                .as_ref()
+                .map(|(id, password, _)| (id.as_str(), password.as_str())),
+        ))
+    }
+
+    fn igdb_status(&self) -> Result<IgdbStatus, String> {
+        Ok(IgdbStatus::from_stored(&self.stored_igdb()?))
+    }
+
+    fn igdb_credentials(&self) -> Result<Option<IgdbCredentials>, String> {
+        Ok(self.stored_igdb()?.credentials())
     }
 
     /// Fetch and cache metadata for one game.
@@ -1468,27 +1825,55 @@ impl Inner {
             None => None,
         };
 
-        let (source, credentials) = match requested {
-            // Steam is keyless, so the keyring is not consulted at all.
-            Some(MetadataSource::Steam) => (MetadataSource::Steam, None),
-            Some(MetadataSource::ScreenScraper) => (
-                MetadataSource::ScreenScraper,
-                self.screenscraper_credentials()?,
-            ),
-            Some(other) => (other, None),
-            // No source asked for: use ScreenScraper once it is configured and
-            // the keyless Steam Store otherwise. An unreadable keyring degrades
-            // to Steam instead of failing a fetch that needs no credential.
-            None => match self.screenscraper_credentials() {
-                Ok(Some(credentials)) => (MetadataSource::ScreenScraper, Some(credentials)),
-                Ok(None) | Err(_) => (MetadataSource::Steam, None),
-            },
+        // One fetch through the engine, under the lock it already requires.
+        let fetch = |source: MetadataSource, credentials: MetadataCreds<'_>| {
+            let mut engine = self.engine.lock().map_err(lock_error)?;
+            engine
+                .fetch_metadata_with_all_creds(game_id, source, credentials)
+                .map_err(|error| metadata_fetch_error(&error, source))
         };
 
-        let mut engine = self.engine.lock().map_err(lock_error)?;
-        engine
-            .fetch_metadata_with_creds(game_id, source, credentials.as_ref())
-            .map_err(|error| metadata_fetch_error(&error))
+        match requested {
+            // Steam is keyless, so the keyring is not consulted at all.
+            Some(MetadataSource::Steam) => fetch(MetadataSource::Steam, MetadataCreds::default()),
+            Some(MetadataSource::ScreenScraper) => {
+                // A source the user picked explicitly reports its own missing
+                // configuration instead of falling through to another one.
+                let credentials = self
+                    .screenscraper_credentials()?
+                    .ok_or_else(|| SCREENSCRAPER_DEV_MISSING.to_string())?;
+                fetch(
+                    MetadataSource::ScreenScraper,
+                    MetadataCreds::screenscraper(Some(&credentials)),
+                )
+            }
+            Some(MetadataSource::Igdb) => {
+                let credentials = self
+                    .igdb_credentials()?
+                    .ok_or_else(|| IGDB_MISSING.to_string())?;
+                fetch(
+                    MetadataSource::Igdb,
+                    MetadataCreds::igdb(Some(&credentials)),
+                )
+            }
+            // No source asked for: ScreenScraper once it is configured, then
+            // IGDB once its Twitch application is stored, then the keyless Steam
+            // Store. An unreadable keyring degrades to the next source instead
+            // of failing a fetch that can succeed without it.
+            None => match self.screenscraper_credentials() {
+                Ok(Some(credentials)) => fetch(
+                    MetadataSource::ScreenScraper,
+                    MetadataCreds::screenscraper(Some(&credentials)),
+                ),
+                _ => match self.igdb_credentials() {
+                    Ok(Some(credentials)) => fetch(
+                        MetadataSource::Igdb,
+                        MetadataCreds::igdb(Some(&credentials)),
+                    ),
+                    _ => fetch(MetadataSource::Steam, MetadataCreds::default()),
+                },
+            },
+        }
     }
 }
 
@@ -1522,10 +1907,17 @@ fn game_metadata(
 
 /// Store the ScreenScraper credentials in the OS keyring.
 ///
-/// A blank field keeps the stored value, so adjusting one field never requires
-/// holding the others. The candidate set is validated by building a provider
-/// before anything is written; if a write still fails, every entry it replaced is
-/// restored.
+/// The simple form carries only the user's own ScreenScraper account; the
+/// application-level developer pair is the build's default and lives in the
+/// collapsed Advanced block. A blank field keeps the stored value, so adjusting
+/// one field never requires holding the others. The candidate set is validated
+/// by building a provider before anything is written; if a write still fails,
+/// every entry it replaced is restored.
+///
+/// Only a value the user typed (or already stored) is ever written: a developer
+/// pair that came from the environment or the build is used for validation and
+/// then dropped, so a default can never be laundered into the keyring and
+/// shadow a future build default.
 #[tauri::command(rename_all = "snake_case")]
 fn set_screenscraper_credentials(
     state: tauri::State<'_, AppState>,
@@ -1536,41 +1928,51 @@ fn set_screenscraper_credentials(
 ) -> Result<ScreenScraperStatus, String> {
     let inner = &*state.inner;
     let stored = inner.stored_screenscraper()?;
-    let next =
-        resolve_screenscraper_credentials(&stored, &dev_id, &dev_password, &ssid, &sspassword)?;
+    // The keyring is only one possible source, so the Advanced fields are
+    // optional wherever the environment or the build already supplies a pair.
+    let developer_required = developer_pair(&stored).is_none();
+    let next = resolve_screenscraper_form(
+        &stored,
+        &dev_id,
+        &dev_password,
+        &ssid,
+        &sspassword,
+        developer_required,
+    )?;
 
-    let credentials = next.credentials().ok_or_else(|| {
-        // Unreachable: `resolve` already rejected an incomplete developer pair.
-        "Enter the ScreenScraper dev id and dev password.".to_string()
-    })?;
+    // Validate against the pair the application would actually use, which is the
+    // keyring value after this write when the user supplied one, and the
+    // environment or build default otherwise.
+    let effective = developer_pair(&next);
+    let credentials = next
+        .credentials_with(
+            effective
+                .as_ref()
+                .map(|(id, password, _)| (id.as_str(), password.as_str())),
+        )
+        .ok_or_else(|| {
+            // Unreachable: `resolve` already rejected a form with no usable pair.
+            SCREENSCRAPER_DEV_MISSING.to_string()
+        })?;
     validate_screenscraper_credentials(&credentials)?;
 
-    persist_screenscraper_credentials(&[
-        (
+    persist_screenscraper_credentials(&screenscraper_changes(
+        [
             inner.screenscraper_dev_id.as_ref(),
-            stored.dev_id,
-            next.dev_id.clone(),
-        ),
-        (
             inner.screenscraper_dev_password.as_ref(),
-            stored.dev_password,
-            next.dev_password.clone(),
-        ),
-        (
             inner.screenscraper_user_ssid.as_ref(),
-            stored.ssid,
-            next.ssid.clone(),
-        ),
-        (
             inner.screenscraper_user_sspassword.as_ref(),
-            stored.sspassword,
-            next.sspassword.clone(),
-        ),
-    ])?;
+        ],
+        stored,
+        &next,
+    ))?;
 
     // Derived from what was just persisted: another keyring read could fail
     // after a successful write and report a contradiction.
-    Ok(ScreenScraperStatus::from_stored(&next))
+    Ok(ScreenScraperStatus::with_developer(
+        &next,
+        developer_pair(&next).is_some(),
+    ))
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -1580,6 +1982,9 @@ fn screenscraper_status(state: tauri::State<'_, AppState>) -> Result<ScreenScrap
 
 /// Remove every ScreenScraper credential. The game metadata already cached stays
 /// cached: it is a copy of public catalogue data, not a credential.
+///
+/// The reported status still reflects a build or environment default, so the
+/// panel does not claim ScreenScraper became unusable when this build can use it.
 #[tauri::command(rename_all = "snake_case")]
 fn clear_screenscraper_credentials(
     state: tauri::State<'_, AppState>,
@@ -1600,19 +2005,92 @@ fn clear_screenscraper_credentials(
             None,
         ),
     ])?;
-    Ok(ScreenScraperStatus::default())
+    let cleared = StoredScreenScraper::default();
+    Ok(ScreenScraperStatus::with_developer(
+        &cleared,
+        developer_pair(&cleared).is_some(),
+    ))
+}
+
+/// Store the IGDB (Twitch application) credentials in the OS keyring.
+///
+/// A blank field keeps the stored value. The candidate set is validated by
+/// building a provider before anything is written; if a write still fails, every
+/// entry it replaced is restored.
+#[tauri::command(rename_all = "snake_case")]
+fn set_igdb_credentials(
+    state: tauri::State<'_, AppState>,
+    client_id: String,
+    client_secret: String,
+) -> Result<IgdbStatus, String> {
+    let inner = &*state.inner;
+    let stored = inner.stored_igdb()?;
+    let next = resolve_igdb_credentials(&stored, &client_id, &client_secret)?;
+
+    let credentials = next.credentials().ok_or_else(|| {
+        // Unreachable: `resolve` already rejected an incomplete application.
+        IGDB_MISSING.to_string()
+    })?;
+    validate_igdb_credentials(&credentials)?;
+
+    persist_igdb_credentials(&[
+        (
+            inner.igdb_client_id.as_ref(),
+            stored.client_id,
+            next.client_id.clone(),
+        ),
+        (
+            inner.igdb_client_secret.as_ref(),
+            stored.client_secret,
+            next.client_secret.clone(),
+        ),
+    ])?;
+
+    // Derived from what was just persisted, for the same reason as ScreenScraper.
+    Ok(IgdbStatus::from_stored(&next))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn igdb_status(state: tauri::State<'_, AppState>) -> Result<IgdbStatus, String> {
+    state.inner.igdb_status()
+}
+
+/// Remove the stored IGDB credentials. Cached metadata stays: it is a copy of
+/// public catalogue data, not a credential.
+#[tauri::command(rename_all = "snake_case")]
+fn clear_igdb_credentials(state: tauri::State<'_, AppState>) -> Result<IgdbStatus, String> {
+    let inner = &*state.inner;
+    let stored = inner.stored_igdb()?;
+    persist_igdb_credentials(&[
+        (inner.igdb_client_id.as_ref(), stored.client_id, None),
+        (
+            inner.igdb_client_secret.as_ref(),
+            stored.client_secret,
+            None,
+        ),
+    ])?;
+    Ok(IgdbStatus::default())
 }
 
 /// Map a metadata error to user-facing text without forwarding internals.
 ///
 /// The error `Display` implementation is never used: it can carry endpoint URLs,
 /// response bodies, and server messages, and an `Auth` failure is raised from a
-/// credential check. Only the class of failure is exposed.
-fn metadata_fetch_error(error: &savesync_core::Error) -> String {
+/// credential check. Only the class of failure is exposed, and the credential
+/// advice names the source the user picked.
+fn metadata_fetch_error(error: &savesync_core::Error, source: MetadataSource) -> String {
     match error {
-        savesync_core::Error::Auth(_) => {
-            "ScreenScraper rejected the saved credentials. Check the developer credentials and, if one is saved, the user account.".to_string()
-        }
+        savesync_core::Error::Auth(_) => match source {
+            MetadataSource::ScreenScraper => {
+                "ScreenScraper rejected the saved credentials. Check the developer credentials and, if one is saved, the user account.".to_string()
+            }
+            MetadataSource::Igdb => {
+                "IGDB rejected the saved credentials. Check the Twitch client id and client secret in Settings.".to_string()
+            }
+            MetadataSource::Steam => {
+                "The metadata source rejected the request. Try again later.".to_string()
+            }
+        },
         savesync_core::Error::NotFound(_) => {
             "No metadata found for this game from the selected source.".to_string()
         }
@@ -2234,6 +2712,24 @@ pub fn run() {
                     SCREENSCRAPER_USER_SSPASSWORD_ACCOUNT,
                 ))
             };
+            // IGDB keeps one keyring item per field for the same reason, and both
+            // are secrets, so they follow the same policy as every other credential.
+            let igdb_client_id: Arc<dyn TokenStore> = if memory_tokens {
+                Arc::new(MemoryTokenStore::default())
+            } else {
+                Arc::new(KeyringTokenStore::new(
+                    savesync_core::SERVICE,
+                    IGDB_CLIENT_ID_ACCOUNT,
+                ))
+            };
+            let igdb_client_secret: Arc<dyn TokenStore> = if memory_tokens {
+                Arc::new(MemoryTokenStore::default())
+            } else {
+                Arc::new(KeyringTokenStore::new(
+                    savesync_core::SERVICE,
+                    IGDB_CLIENT_SECRET_ACCOUNT,
+                ))
+            };
             let connected = credentials.load().unwrap_or(None).is_some();
             let dropbox_connected = dropbox_credentials.load().unwrap_or(None).is_some();
             let transport: Arc<dyn HttpTransport> = Arc::new(ReqwestTransport::default());
@@ -2274,6 +2770,8 @@ pub fn run() {
                     screenscraper_dev_password,
                     screenscraper_user_ssid,
                     screenscraper_user_sspassword,
+                    igdb_client_id,
+                    igdb_client_secret,
                     transport,
                     client_id: Mutex::new(client_id),
                     oauth: Mutex::new(OAuthRuntime {
@@ -2333,6 +2831,9 @@ pub fn run() {
             set_screenscraper_credentials,
             screenscraper_status,
             clear_screenscraper_credentials,
+            set_igdb_credentials,
+            igdb_status,
+            clear_igdb_credentials,
             fetch_cover_art,
             search_cover_candidates,
             set_cover_grid,
@@ -2702,7 +3203,7 @@ mod tests {
     }
 
     /// The helper notes hand URLs to the same kind of command, so the docs
-    /// allow-list is exact: only the six documented pages, nothing appended.
+    /// allow-list is exact: only the seven documented pages, nothing appended.
     #[test]
     fn open_docs_url_only_accepts_documented_pages() {
         for url in DOCS_URLS {
@@ -2732,6 +3233,19 @@ mod tests {
         ));
         assert!(!is_allowed_docs_url(
             "http://www.screenscraper.fr/membreinscription.php"
+        ));
+
+        // The IGDB note links to the Twitch application form, and only there:
+        // the console index is a different page and plain HTTP is refused.
+        assert!(is_allowed_docs_url(
+            "https://dev.twitch.tv/console/apps/create"
+        ));
+        assert!(!is_allowed_docs_url("https://dev.twitch.tv/console/apps"));
+        assert!(!is_allowed_docs_url(
+            "http://dev.twitch.tv/console/apps/create"
+        ));
+        assert!(!is_allowed_docs_url(
+            "https://dev.twitch.tv/console/apps/create?next=/admin"
         ));
 
         assert!(!is_allowed_docs_url("https://evil.test/"));
@@ -3527,19 +4041,28 @@ mod tests {
         ];
 
         for error in errors {
-            let message = metadata_fetch_error(&error);
+            let message = metadata_fetch_error(&error, MetadataSource::ScreenScraper);
             assert!(!message.contains(sentinel), "leaked into {message}");
             // No branch forwards the raw error text or its URL.
             assert!(!message.contains("api.screenscraper.fr"));
             assert!(!message.contains("sspassword"));
         }
 
+        // The credential advice names the source the user picked, so a rejected
+        // IGDB application does not send them to the ScreenScraper form.
+        let auth = savesync_core::Error::Auth("x".into());
+        let screenscraper = metadata_fetch_error(&auth, MetadataSource::ScreenScraper);
+        let igdb = metadata_fetch_error(&auth, MetadataSource::Igdb);
+        assert!(screenscraper.contains("ScreenScraper"));
+        assert!(!screenscraper.contains("IGDB"));
+        assert!(igdb.contains("IGDB"));
+        assert!(!igdb.contains("ScreenScraper"));
         assert!(
-            metadata_fetch_error(&savesync_core::Error::Auth("x".into())).contains("ScreenScraper")
-        );
-        assert!(
-            metadata_fetch_error(&savesync_core::Error::NotFound("x".into()))
-                .contains("No metadata found")
+            metadata_fetch_error(
+                &savesync_core::Error::NotFound("x".into()),
+                MetadataSource::ScreenScraper
+            )
+            .contains("No metadata found")
         );
     }
 
@@ -3583,6 +4106,287 @@ mod tests {
             }
             .credentials()
             .is_none()
+        );
+    }
+
+    /// The "no developer credentials" text names the missing configuration only.
+    /// It must not hint at how the pair is supplied: no variable name, no URL,
+    /// and no value.
+    #[test]
+    fn missing_developer_credentials_text_carries_no_internals() {
+        assert!(SCREENSCRAPER_DEV_MISSING.contains("ScreenScraper"));
+        assert!(SCREENSCRAPER_DEV_MISSING.contains("not configured"));
+
+        for forbidden in [
+            SCREENSCRAPER_DEV_ID_ENV,
+            SCREENSCRAPER_DEV_PASSWORD_ENV,
+            "SAVESYNC_SCREENSCRAPER",
+            "http://",
+            "https://",
+            "screenscraper.fr",
+        ] {
+            assert!(
+                !SCREENSCRAPER_DEV_MISSING.contains(forbidden),
+                "leaked {forbidden}"
+            );
+        }
+    }
+
+    /// The developer pair resolves by fixed precedence: the user's Advanced
+    /// entry (keyring) beats the environment, which beats the build.
+    ///
+    /// Only the source class is asserted, never a value in test output.
+    #[test]
+    fn developer_pair_precedence_is_keyring_then_environment_then_build() {
+        let (id, password, source) = resolve_developer_pair(
+            Some(("keyring-id", "keyring-password")),
+            Some(("env-id", "env-password")),
+            Some(("build-id", "build-password")),
+        )
+        .expect("a pair is available");
+        assert_eq!(source, DeveloperSource::Keyring);
+        assert!(
+            id == "keyring-id" && password == "keyring-password",
+            "wrong pair selected"
+        );
+
+        // A blank Advanced half is absent, so the environment wins.
+        let (id, _, source) = resolve_developer_pair(
+            Some(("keyring-id", "   ")),
+            Some(("env-id", "env-password")),
+            Some(("build-id", "build-password")),
+        )
+        .expect("a pair is available");
+        assert_eq!(source, DeveloperSource::Environment);
+        assert!(id == "env-id", "wrong pair selected");
+
+        // A blank environment variable is how a shell reports "unset", so the
+        // build pair is used.
+        let (id, _, source) =
+            resolve_developer_pair(None, Some(("  ", "")), Some(("build-id", "build-password")))
+                .expect("a pair is available");
+        assert_eq!(source, DeveloperSource::Build);
+        assert!(id == "build-id", "wrong pair selected");
+
+        // Nothing usable anywhere: no credentials, and none invented.
+        assert!(resolve_developer_pair(None, None, None).is_none());
+        assert!(
+            resolve_developer_pair(Some(("", "")), Some(("", "\t")), Some(("", "x"))).is_none()
+        );
+    }
+
+    /// A blank IGDB field keeps the stored value, so rotating the secret never
+    /// requires retyping the id.
+    #[test]
+    fn blank_igdb_fields_keep_the_stored_values() {
+        let stored = StoredIgdb {
+            client_id: Some("stored-client-id".into()),
+            client_secret: Some("stored-client-secret".into()),
+        };
+
+        let unchanged = resolve_igdb_credentials(&stored, "  ", "").expect("complete application");
+        assert_eq!(unchanged.client_id.as_deref(), Some("stored-client-id"));
+        assert_eq!(
+            unchanged.client_secret.as_deref(),
+            Some("stored-client-secret")
+        );
+
+        // Only the secret is rotated; the typed value is trimmed.
+        let rotated =
+            resolve_igdb_credentials(&stored, "", "  new-client-secret  ").expect("complete pair");
+        assert_eq!(rotated.client_id.as_deref(), Some("stored-client-id"));
+        assert_eq!(rotated.client_secret.as_deref(), Some("new-client-secret"));
+
+        // A half-stored application is completed by typing the missing half.
+        let half = StoredIgdb {
+            client_id: Some("stored-client-id".into()),
+            client_secret: None,
+        };
+        let completed =
+            resolve_igdb_credentials(&half, "", "new-client-secret").expect("complete pair");
+        assert_eq!(completed.client_id.as_deref(), Some("stored-client-id"));
+        assert_eq!(
+            completed.client_secret.as_deref(),
+            Some("new-client-secret")
+        );
+
+        // A first-time set needs both halves, and the text carries no value.
+        let missing =
+            resolve_igdb_credentials(&StoredIgdb::default(), "client-id", "").unwrap_err();
+        assert_eq!(missing, "Enter both the IGDB client id and client secret.");
+        assert!(!missing.contains("client-id"));
+
+        // Oversized input is refused before it reaches the keyring.
+        let oversized = "x".repeat(IGDB_VALUE_MAX_LEN + 1);
+        let error = resolve_igdb_credentials(&StoredIgdb::default(), &oversized, "client-secret")
+            .unwrap_err();
+        assert!(error.contains("at most"));
+        assert!(!error.contains(&oversized));
+    }
+
+    const IGDB_CLIENT_ID_SENTINEL: &str = "igdb-client-id-sentinel";
+    const IGDB_CLIENT_SECRET_SENTINEL: &str = "igdb-client-secret-sentinel";
+
+    /// The IGDB status shape crosses IPC, so it must carry flags only.
+    #[test]
+    fn igdb_status_never_serializes_a_secret_field() {
+        let status = IgdbStatus::from_stored(&StoredIgdb {
+            client_id: Some(IGDB_CLIENT_ID_SENTINEL.into()),
+            client_secret: Some(IGDB_CLIENT_SECRET_SENTINEL.into()),
+        });
+        let json = serde_json::to_string(&status).unwrap();
+
+        assert_eq!(
+            json,
+            r#"{"configured":true,"client_id_configured":true,"client_secret_configured":true}"#
+        );
+        for forbidden in [IGDB_CLIENT_ID_SENTINEL, IGDB_CLIENT_SECRET_SENTINEL] {
+            assert!(!json.contains(forbidden), "leaked {forbidden}");
+        }
+        // A value field would appear under its own name; only the flags do.
+        assert!(!json.contains("\"client_id\":"));
+        assert!(!json.contains("\"client_secret\":"));
+
+        // A half-stored application never reports as configured.
+        let partial = IgdbStatus::from_stored(&StoredIgdb {
+            client_id: Some(IGDB_CLIENT_ID_SENTINEL.into()),
+            client_secret: None,
+        });
+        assert!(!partial.configured);
+        assert!(partial.client_id_configured);
+        assert!(!partial.client_secret_configured);
+        assert_eq!(
+            serde_json::to_string(&IgdbStatus::default()).unwrap(),
+            r#"{"configured":false,"client_id_configured":false,"client_secret_configured":false}"#
+        );
+    }
+
+    /// A failed IGDB write restores every entry it already replaced, and the
+    /// error never carries the underlying keyring text.
+    #[test]
+    fn igdb_mid_write_failure_restores_the_prior_secrets() {
+        let client_id: Arc<dyn TokenStore> = Arc::new(MemoryTokenStore::new(Some(
+            IGDB_CLIENT_ID_SENTINEL.to_string(),
+        )));
+        // Fails the forward write *after* dropping the prior value, so the
+        // assertion below only passes if the rollback wrote it back.
+        let client_secret = FailFirstSaveStore::new(Some(IGDB_CLIENT_SECRET_SENTINEL));
+
+        let error = persist_igdb_credentials(&[
+            (
+                client_id.as_ref(),
+                Some(IGDB_CLIENT_ID_SENTINEL.to_string()),
+                Some("new-client-id".to_string()),
+            ),
+            (
+                &client_secret,
+                Some(IGDB_CLIENT_SECRET_SENTINEL.to_string()),
+                Some("new-client-secret".to_string()),
+            ),
+        ])
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            "Could not save the IGDB credentials to the OS keyring."
+        );
+        // The rollback itself succeeded, so no warning is appended.
+        assert!(!error.contains("could not be fully restored"));
+        assert!(!error.contains(IGDB_CLIENT_SECRET_SENTINEL));
+        assert!(!error.contains("keyring payload"));
+        assert_eq!(
+            client_id.load().unwrap().as_deref(),
+            Some(IGDB_CLIENT_ID_SENTINEL)
+        );
+        assert_eq!(
+            client_secret.token().as_deref(),
+            Some(IGDB_CLIENT_SECRET_SENTINEL)
+        );
+    }
+
+    /// A rollback that cannot undo an IGDB entry must say so instead of
+    /// reporting a clean failure.
+    #[test]
+    fn igdb_rollback_failure_is_reported_instead_of_swallowed() {
+        let client_id = WriteThenFailStore::new(Some("old-client-id"));
+        let client_secret: Arc<dyn TokenStore> = Arc::new(MemoryTokenStore::default());
+
+        let error = persist_igdb_credentials(&[
+            (
+                &client_id,
+                Some("old-client-id".to_string()),
+                Some("new-client-id".to_string()),
+            ),
+            (
+                client_secret.as_ref(),
+                None,
+                Some("new-client-secret".to_string()),
+            ),
+        ])
+        .unwrap_err();
+
+        assert!(error.starts_with("Could not save the IGDB credentials to the OS keyring."));
+        assert!(error.contains("could not be fully restored"));
+        assert!(!error.contains("leaked"));
+        // The forward write landed even though it reported an error, which is
+        // exactly the state the warning is there to describe.
+        assert_eq!(client_id.token().as_deref(), Some("new-client-id"));
+        // The failure happened before the secret's entry was touched.
+        assert_eq!(client_secret.load().unwrap(), None);
+    }
+
+    /// A developer pair that comes from the environment or the build feeds
+    /// validation only. Submitting a blank Advanced block then writes nothing,
+    /// so a default can never be laundered into the keyring and shadow a future
+    /// build default.
+    #[test]
+    fn default_developer_pair_is_never_persisted_to_the_keyring() {
+        let dev_id = MemoryTokenStore::default();
+        let dev_password = MemoryTokenStore::default();
+        let ssid = MemoryTokenStore::default();
+        let sspassword = MemoryTokenStore::default();
+        let stored = StoredScreenScraper::default();
+
+        // The command passes `developer_required = false` exactly when a default
+        // already resolves; a blank submission is then valid and empty.
+        let next = resolve_screenscraper_form(&stored, "", "", "", "", false)
+            .expect("the default pair satisfies the requirement");
+        assert_eq!(next.dev_id, None);
+        assert_eq!(next.dev_password, None);
+
+        persist_screenscraper_credentials(&screenscraper_changes(
+            [&dev_id, &dev_password, &ssid, &sspassword],
+            stored,
+            &next,
+        ))
+        .expect("nothing to write");
+
+        assert_eq!(dev_id.load().unwrap(), None);
+        assert_eq!(dev_password.load().unwrap(), None);
+        assert_eq!(ssid.load().unwrap(), None);
+        assert_eq!(sspassword.load().unwrap(), None);
+
+        // A value the user typed is intent rather than a default, so it is
+        // stored; only the defaults are dropped.
+        let typed = resolve_screenscraper_form(
+            &StoredScreenScraper::default(),
+            "typed-dev-id",
+            "typed-dev-password",
+            "",
+            "",
+            false,
+        )
+        .expect("typed pair is complete");
+        persist_screenscraper_credentials(&screenscraper_changes(
+            [&dev_id, &dev_password, &ssid, &sspassword],
+            StoredScreenScraper::default(),
+            &typed,
+        ))
+        .expect("typed pair is persisted");
+        assert_eq!(dev_id.load().unwrap().as_deref(), Some("typed-dev-id"));
+        assert_eq!(
+            dev_password.load().unwrap().as_deref(),
+            Some("typed-dev-password")
         );
     }
 }

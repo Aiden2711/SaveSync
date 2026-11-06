@@ -1388,6 +1388,23 @@ label {
   white-space: nowrap;
 }
 
+/*
+ * Source picker + fetch button. The select keeps its natural width instead of
+ * the full-width field default, so the pair reads as one action row.
+ */
+.metadata-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2xs);
+}
+
+.metadata-actions select {
+  width: auto;
+  min-width: 11rem;
+  flex: 0 1 auto;
+}
+
 .panel.conflicts {
   border-color: var(--warn);
 }
@@ -1541,6 +1558,39 @@ label {
 }
 
 /* ---- Settings ------------------------------------------------------- */
+
+/*
+ * The collapsed "Advanced" block inside a credential panel. It holds the fields
+ * that only a self-hosted developer account needs, so it stays folded and out of
+ * the simple login path; the summary uses the same small-label rhythm as a form
+ * label without competing with it.
+ */
+.advanced-credentials {
+  display: grid;
+  gap: var(--space-xs);
+  padding-top: var(--space-xs);
+  border-top: 1px solid var(--hairline);
+}
+
+.advanced-credentials summary {
+  color: var(--ink-2);
+  font-family: var(--font-ui);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.advanced-credentials summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-control);
+}
+
+.advanced-credentials[open] summary {
+  color: var(--ink);
+}
 
 .settings-rows {
   display: grid;
