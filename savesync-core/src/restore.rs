@@ -80,6 +80,13 @@ impl DataPaths {
         self.root.join("covers")
     }
 
+    /// Cached game metadata indexes (for example the Steam app list).
+    ///
+    /// Pure enrichment: deleting this directory only costs a re-download.
+    pub fn metadata(&self) -> PathBuf {
+        self.root.join("metadata")
+    }
+
     pub fn staging_for(&self, restore_id: &str) -> PathBuf {
         self.staging().join(restore_id)
     }

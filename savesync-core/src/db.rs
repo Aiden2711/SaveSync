@@ -18,6 +18,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("sql/002_add_cover_path.sql"),
     include_str!("sql/003_discovery_cache.sql"),
     include_str!("sql/004_cover_variants.sql"),
+    include_str!("sql/005_game_metadata.sql"),
 ];
 
 /// Latest schema version understood by this binary.
@@ -139,8 +140,8 @@ mod tests {
         insert_v1_game(&conn, "g1");
 
         let mut db = Db { conn };
-        assert_eq!(db.migrate().unwrap(), 4);
-        assert_eq!(db.schema_version().unwrap(), 4);
+        assert_eq!(db.migrate().unwrap(), SCHEMA_VERSION);
+        assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
 
         let game = crate::store::get_game(db.connection(), "g1")
             .unwrap()
@@ -151,7 +152,7 @@ mod tests {
 
         // Forward-only migrations stay re-runnable.
         db.migrate().unwrap();
-        assert_eq!(db.schema_version().unwrap(), 4);
+        assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
     }
 
     /// The schema itself keeps "at most one featured game" true.
@@ -171,6 +172,88 @@ mod tests {
             error.to_string().contains("UNIQUE"),
             "a second featured row must be rejected, got {error}"
         );
+    }
+
+    /// v5 adds an empty metadata cache table that older rows never touch, and
+    /// a metadata row disappears with the game it describes.
+    #[test]
+    fn v5_adds_game_metadata_cache_and_cascades_with_the_game() {
+        let conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..4] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 4u32).unwrap();
+        // `from_connection` sets this in production; enable it here so the
+        // cascade assertion exercises the schema rather than a disabled pragma.
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        insert_v1_game(&conn, "g1");
+
+        let mut db = Db { conn };
+        assert_eq!(db.migrate().unwrap(), SCHEMA_VERSION);
+        assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
+
+        // The pre-existing game survives, and it simply has no metadata yet.
+        let game = crate::store::get_game(db.connection(), "g1")
+            .unwrap()
+            .expect("the pre-existing row must survive the migration");
+        assert_eq!(game.title, "Hades");
+        assert!(
+            crate::store::load_metadata(db.connection(), "g1")
+                .unwrap()
+                .is_none()
+        );
+
+        let metadata = crate::metadata::GameMetadata {
+            source: crate::metadata::MetadataSource::Steam,
+            source_id: "1145360".to_string(),
+            name: "Hades".to_string(),
+            release_year: Some(2020),
+            release_date: Some("17 Sep, 2020".to_string()),
+            genres: vec!["Action".to_string(), "Roguelike".to_string()],
+            developers: vec!["Supergiant Games".to_string()],
+            publishers: vec!["Supergiant Games".to_string()],
+            description_short: Some("Defy the god of the dead.".to_string()),
+            description_long: None,
+            players: None,
+            age_rating: None,
+            franchise: None,
+            themes: Vec::new(),
+            fetched_at: "2026-11-06T10:00:00.000Z".to_string(),
+        };
+        crate::store::upsert_metadata(db.connection(), "g1", &metadata).unwrap();
+        assert_eq!(
+            crate::store::load_metadata(db.connection(), "g1")
+                .unwrap()
+                .expect("the cached row round-trips"),
+            metadata
+        );
+
+        // One row per game: a later fetch replaces rather than duplicates.
+        let mut updated = metadata.clone();
+        updated.name = "Hades (updated)".to_string();
+        updated.franchise = Some("Hades".to_string());
+        crate::store::upsert_metadata(db.connection(), "g1", &updated).unwrap();
+        assert_eq!(
+            crate::store::load_metadata(db.connection(), "g1")
+                .unwrap()
+                .unwrap(),
+            updated
+        );
+
+        // Deleting the game removes its metadata with it.
+        db.connection()
+            .execute("DELETE FROM games WHERE id = 'g1'", [])
+            .unwrap();
+        assert!(
+            crate::store::load_metadata(db.connection(), "g1")
+                .unwrap()
+                .is_none(),
+            "metadata must not outlive its game"
+        );
+
+        // Forward-only migrations stay re-runnable.
+        db.migrate().unwrap();
+        assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
     }
 
     #[test]

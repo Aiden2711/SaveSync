@@ -181,6 +181,11 @@ pub enum ProviderFlavor {
     WebDav,
     S3,
     Dropbox,
+    /// The keyless Steam Store endpoints.
+    ///
+    /// Steam throttles with `429`; there is no quota body to recognize, so a
+    /// `403` stays a permanent refusal exactly like WebDAV.
+    SteamStore,
 }
 
 /// How one HTTP response is treated at the provider boundary.
@@ -304,6 +309,9 @@ fn has_quota_signature(body: &[u8], flavor: ProviderFlavor) -> bool {
             .iter()
             .any(|needle| text.contains(needle))
         }
+        // The Steam Store API has no documented quota body; `429` is already
+        // transient by status, so a `403` is never retried.
+        ProviderFlavor::SteamStore => false,
     }
 }
 

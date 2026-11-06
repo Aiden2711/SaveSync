@@ -15,6 +15,7 @@ use crate::blob::BlobStore;
 use crate::db::Db;
 use crate::error::{Error, Result};
 use crate::manifest::{Manifest, ManifestDiff};
+use crate::metadata::{self, GameMetadata, MetadataProvider, MetadataSource};
 use crate::models::{
     AdapterType, Conflict, Device, Game, Location, LocationKind, RestoreJournalEntry,
     RestoreReport, Revision, SnapshotInfo,
@@ -443,6 +444,52 @@ impl SaveSyncEngine {
         Ok(updated)
     }
 
+    /// Read a game's cached metadata, if it has ever been fetched.
+    ///
+    /// Returns `Ok(None)` for a game that has no cached row and, like every
+    /// other lookup, for an unknown game id. No network request is made.
+    pub fn cached_metadata(&self, game_id: &str) -> Result<Option<GameMetadata>> {
+        store::load_metadata(self.db.connection(), game_id)
+    }
+
+    /// Fetch metadata for a game from `source` and cache it.
+    ///
+    /// MANUAL-FIRST: nothing calls this implicitly, and no snapshot, restore,
+    /// or sync path waits for it. A failed fetch leaves any previously cached
+    /// row untouched; only a complete [`GameMetadata`] is written.
+    ///
+    /// `source` selects the provider through [`metadata::provider_for`], which
+    /// fails with [`Error::NotFound`] for a source that has no implementation
+    /// yet instead of silently using another one.
+    pub fn fetch_metadata(
+        &mut self,
+        game_id: &str,
+        source: MetadataSource,
+    ) -> Result<GameMetadata> {
+        let provider = metadata::provider_for(source, Some(&self.paths.metadata()))?;
+        self.fetch_metadata_with(provider.as_ref(), game_id)
+    }
+
+    /// Fetch metadata through an explicit provider and cache the result.
+    ///
+    /// This is the injectable seam: tests pass a provider over a scripted
+    /// transport, and a caller that wants the network work to happen while the
+    /// engine lock is released can use
+    /// [`metadata::fetch_for_title`] plus [`Self::cached_metadata`] instead.
+    pub fn fetch_metadata_with(
+        &mut self,
+        provider: &dyn MetadataProvider,
+        game_id: &str,
+    ) -> Result<GameMetadata> {
+        let title = store::require_game(self.db.connection(), game_id)?.title;
+        let metadata = metadata::fetch_for_title(provider, &title)?;
+        self.db.transaction(|tx| {
+            store::upsert_metadata(tx, game_id, &metadata)?;
+            Ok(())
+        })?;
+        Ok(metadata)
+    }
+
     /// Attach a save location to a game.
     ///
     /// The path must already exist as a directory; it is canonicalized before
@@ -463,7 +510,6 @@ impl SaveSyncEngine {
             )
         })
     }
-
     pub fn list_locations(&self, game_id: &str) -> Result<Vec<Location>> {
         store::list_locations(self.db.connection(), game_id)
     }

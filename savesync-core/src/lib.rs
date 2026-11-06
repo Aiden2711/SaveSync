@@ -32,6 +32,7 @@ pub mod google_drive;
 pub mod hash;
 pub mod http;
 pub mod manifest;
+pub mod metadata;
 pub mod models;
 pub mod oauth;
 pub mod oauth_loopback;
@@ -39,6 +40,7 @@ pub mod paths;
 pub mod provider;
 pub mod provider_runtime;
 pub mod restore;
+pub mod steam_metadata;
 pub mod store;
 pub mod sync;
 pub mod watcher;
@@ -60,6 +62,10 @@ pub use error::{Error, Result};
 pub use google_drive::GoogleDriveProvider;
 pub use http::{HttpTransport, ReqwestTransport, RetryPolicy};
 pub use manifest::{FileEntry, Manifest, ManifestDiff};
+pub use metadata::{
+    GameMetadata, MetadataCandidate, MetadataProvider, MetadataSource, best_candidate,
+    normalize_title, provider_for,
+};
 pub use models::{
     AdapterType, Conflict, Device, Game, Location, LocationKind, RestoreJournalEntry,
     RestoreReport, RestoreState, Revision, SnapshotInfo,
@@ -72,6 +78,7 @@ pub use oauth_loopback::OAuthFlow;
 pub use provider::{LocalFolderProvider, SyncProvider};
 pub use provider_runtime::{ProviderFlavor, StatusClass};
 pub use restore::{DataPaths, RestoreMode, RestoreRequest};
+pub use steam_metadata::SteamMetadataProvider;
 pub use sync::{SyncDirection, SyncReport};
 pub use watcher::{ChangeTracker, DebouncePolicy, DirtyEvent, DirtyReason, SaveWatcher};
 pub use webdav::WebDavProvider;

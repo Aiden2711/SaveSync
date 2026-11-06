@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::error::{Error, Result};
 use crate::manifest::{FileEntry, Manifest};
+use crate::metadata::{GameMetadata, MetadataSource};
 use crate::models::{
     AdapterType, Conflict, Device, Game, Location, LocationKind, RestoreJournalEntry, RestoreState,
     Revision,
@@ -284,6 +285,123 @@ pub fn clear_featured(conn: &Connection) -> Result<()> {
         [now_iso()],
     )?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Game metadata cache
+// ---------------------------------------------------------------------------
+
+/// Columns selected by [`load_metadata`].
+const METADATA_COLUMNS: &str = "game_id, source, source_id, name, release_year, release_date, \
+     genres, developers, publishers, description_short, description_long, players, age_rating, \
+     franchise, themes, fetched_at";
+
+/// Insert or replace the cached metadata for `game_id`.
+///
+/// One row per game: a later successful fetch replaces the previous provider's
+/// answer entirely, so a partially populated row can never be mixed with the
+/// stale fields of an older source. Lists are stored as JSON text, matching
+/// `revisions.parent_ids` and `restore_journal.deleted_paths`.
+pub fn upsert_metadata(conn: &Connection, game_id: &str, metadata: &GameMetadata) -> Result<()> {
+    conn.execute(
+        "INSERT INTO game_metadata
+             (game_id, source, source_id, name, release_year, release_date, genres,
+              developers, publishers, description_short, description_long, players,
+              age_rating, franchise, themes, fetched_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+         ON CONFLICT(game_id) DO UPDATE SET
+             source = excluded.source,
+             source_id = excluded.source_id,
+             name = excluded.name,
+             release_year = excluded.release_year,
+             release_date = excluded.release_date,
+             genres = excluded.genres,
+             developers = excluded.developers,
+             publishers = excluded.publishers,
+             description_short = excluded.description_short,
+             description_long = excluded.description_long,
+             players = excluded.players,
+             age_rating = excluded.age_rating,
+             franchise = excluded.franchise,
+             themes = excluded.themes,
+             fetched_at = excluded.fetched_at",
+        params![
+            game_id,
+            metadata.source.as_str(),
+            &metadata.source_id,
+            &metadata.name,
+            metadata.release_year,
+            metadata.release_date.as_deref(),
+            serde_json::to_string(&metadata.genres)?,
+            serde_json::to_string(&metadata.developers)?,
+            serde_json::to_string(&metadata.publishers)?,
+            metadata.description_short.as_deref(),
+            metadata.description_long.as_deref(),
+            metadata.players.as_deref(),
+            metadata.age_rating.as_deref(),
+            metadata.franchise.as_deref(),
+            serde_json::to_string(&metadata.themes)?,
+            &metadata.fetched_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Load a game's cached metadata, if any.
+pub fn load_metadata(conn: &Connection, game_id: &str) -> Result<Option<GameMetadata>> {
+    Ok(conn
+        .query_row(
+            &format!("SELECT {METADATA_COLUMNS} FROM game_metadata WHERE game_id = ?1"),
+            [game_id],
+            map_metadata,
+        )
+        .optional()?)
+}
+
+/// Remove a game's cached metadata. Deleting an absent row is a no-op.
+pub fn clear_metadata(conn: &Connection, game_id: &str) -> Result<()> {
+    conn.execute("DELETE FROM game_metadata WHERE game_id = ?1", [game_id])?;
+    Ok(())
+}
+
+fn map_metadata(row: &Row<'_>) -> rusqlite::Result<GameMetadata> {
+    let source_raw: String = row.get("source")?;
+    let source = MetadataSource::parse(&source_raw).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            1,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("unknown metadata source '{source_raw}'"),
+            )),
+        )
+    })?;
+
+    Ok(GameMetadata {
+        source,
+        source_id: row.get("source_id")?,
+        name: row.get("name")?,
+        release_year: row.get("release_year")?,
+        release_date: row.get("release_date")?,
+        genres: json_list(row.get("genres")?),
+        developers: json_list(row.get("developers")?),
+        publishers: json_list(row.get("publishers")?),
+        description_short: row.get("description_short")?,
+        description_long: row.get("description_long")?,
+        players: row.get("players")?,
+        age_rating: row.get("age_rating")?,
+        franchise: row.get("franchise")?,
+        themes: json_list(row.get("themes")?),
+        fetched_at: row.get("fetched_at")?,
+    })
+}
+
+/// Decode a stored JSON string list.
+///
+/// Mirrors the rest of `store`: an unreadable list degrades to empty instead
+/// of making the whole row unreadable. The value is display-only enrichment.
+fn json_list(raw: String) -> Vec<String> {
+    serde_json::from_str(&raw).unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
