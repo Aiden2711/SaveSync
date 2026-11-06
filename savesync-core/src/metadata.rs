@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::http::ReqwestTransport;
+use crate::screenscraper_metadata::{ScreenScraperCredentials, ScreenScraperProvider};
 use crate::steam_metadata::SteamMetadataProvider;
 
 /// Where a piece of game metadata came from.
@@ -129,19 +130,40 @@ pub trait MetadataProvider: Send + Sync {
     fn details(&self, source_id: &str) -> Result<GameMetadata>;
 }
 
-/// Build the production provider for `source`.
+/// Build the production provider for a source that needs no credentials.
 ///
-/// This is the registry counterpart of [`crate::adapters::adapter_for`], with
-/// one deliberate difference: a provider needs a transport (and, for Steam, a
-/// cache location), so construction is fallible and takes the engine's data
-/// directory instead of returning a `'static` value. `cache_dir` may be `None`
-/// for a provider that keeps its search index in memory only (tests).
+/// This is [`provider_for_with`] with no credentials, kept so every existing
+/// caller is unchanged: Steam behaves exactly as before, and a credentialed
+/// source fails with [`Error::Auth`] instead of silently searching without the
+/// credentials it needs.
+///
+/// `cache_dir` may be `None` for a provider that keeps its search index in
+/// memory only (tests).
 ///
 /// Sources that have no implementation yet fail with [`Error::NotFound`]
 /// rather than silently falling back to another provider.
 pub fn provider_for(
     source: MetadataSource,
     cache_dir: Option<&Path>,
+) -> Result<Box<dyn MetadataProvider>> {
+    provider_for_with(source, cache_dir, None)
+}
+
+/// Build the production provider for `source`, passing caller-supplied
+/// credentials when the source needs them.
+///
+/// The registry counterpart of [`crate::adapters::adapter_for`], with one
+/// deliberate difference: a provider needs a transport (and, for Steam, a cache
+/// location), so construction is fallible and takes the engine's data directory
+/// instead of returning a `'static` value.
+///
+/// Credentials are never stored by core: they are cloned into the returned
+/// provider and dropped with it. A credentialed source without credentials is
+/// [`Error::Auth`]; Steam ignores the parameter, so it stays keyless.
+pub fn provider_for_with(
+    source: MetadataSource,
+    cache_dir: Option<&Path>,
+    credentials: Option<&ScreenScraperCredentials>,
 ) -> Result<Box<dyn MetadataProvider>> {
     match source {
         MetadataSource::Steam => {
@@ -153,7 +175,19 @@ pub fn provider_for(
                 None => SteamMetadataProvider::new(std::sync::Arc::new(transport)),
             }))
         }
-        MetadataSource::ScreenScraper | MetadataSource::Igdb => Err(Error::NotFound(format!(
+        MetadataSource::ScreenScraper => {
+            let credentials = credentials.ok_or_else(|| {
+                Error::Auth(format!(
+                    "{source} requires caller-supplied developer credentials"
+                ))
+            })?;
+            let transport = ReqwestTransport::default();
+            Ok(Box::new(ScreenScraperProvider::new(
+                std::sync::Arc::new(transport),
+                credentials.clone(),
+            )?))
+        }
+        MetadataSource::Igdb => Err(Error::NotFound(format!(
             "no metadata provider is configured for {source}"
         ))),
     }
@@ -325,10 +359,24 @@ mod tests {
 
     #[test]
     fn unimplemented_sources_do_not_silently_fall_back() {
-        for source in [MetadataSource::ScreenScraper, MetadataSource::Igdb] {
-            let error = provider_for(source, None).err().expect("no provider yet");
-            assert!(matches!(error, Error::NotFound(_)));
-            assert!(error.to_string().contains(source.as_str()));
-        }
+        let error = provider_for(MetadataSource::Igdb, None)
+            .err()
+            .expect("no provider yet");
+        assert!(matches!(error, Error::NotFound(_)));
+        assert!(error.to_string().contains("igdb"));
+    }
+
+    #[test]
+    fn a_credentialed_source_requires_credentials() {
+        let error = provider_for(MetadataSource::ScreenScraper, None)
+            .err()
+            .expect("credentials are required");
+        assert!(matches!(error, Error::Auth(_)), "{error:?}");
+
+        let credentials = ScreenScraperCredentials::developer("dev", "dev-password")
+            .with_softname("savesync-test");
+        let provider =
+            provider_for_with(MetadataSource::ScreenScraper, None, Some(&credentials)).unwrap();
+        assert_eq!(provider.source(), MetadataSource::ScreenScraper);
     }
 }

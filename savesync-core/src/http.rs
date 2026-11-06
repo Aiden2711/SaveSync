@@ -216,9 +216,13 @@ impl std::fmt::Debug for HttpRequest {
                 (name.as_str(), value)
             })
             .collect();
+        // Providers that can only pass credentials as query parameters (for
+        // example ScreenScraper's `devid`/`devpassword`) must not leak them
+        // through a panic message or trace.
+        let url = crate::provider_runtime::redact_secrets(&self.url);
         f.debug_struct("HttpRequest")
             .field("method", &self.method)
-            .field("url", &self.url)
+            .field("url", &url)
             .field("headers", &headers)
             .field("body", &self.body)
             .field("download_to", &self.download_to)
@@ -339,7 +343,12 @@ impl HttpTransport for ReqwestTransport {
 
         let mut response = builder
             .send()
-            .map_err(|error| Error::Network(error.to_string()))?;
+            // `reqwest::Error` renders the request URL, and a provider that can
+            // only authenticate through query parameters (ScreenScraper) would
+            // otherwise leak its credentials into a transport error.
+            .map_err(|error| {
+                Error::Network(crate::provider_runtime::redact_secrets(&error.to_string()))
+            })?;
         let status = response.status().as_u16();
         let headers = response
             .headers()
@@ -583,6 +592,22 @@ mod tests {
         let capped = HttpRequest::new(HttpMethod::Get, "https://example.invalid/file")
             .max_download_bytes(1234);
         assert_eq!(capped.max_download_bytes, Some(1234));
+    }
+
+    #[test]
+    fn request_debug_scrubs_credentials_carried_in_the_url() {
+        let request = HttpRequest::new(
+            HttpMethod::Get,
+            "https://api.screenscraper.fr/api2/jeuInfos.php?devid=dev-secret&devpassword=pw-secret&ssid=user-secret&sspassword=user-pw&output=json",
+        )
+        .header("Accept", "application/json");
+        let rendered = format!("{request:?}");
+
+        for secret in ["dev-secret", "pw-secret", "user-secret", "user-pw"] {
+            assert!(!rendered.contains(secret), "{secret} leaked: {rendered}");
+        }
+        assert!(rendered.contains("output=json"), "{rendered}");
+        assert!(rendered.contains("[redacted]"), "{rendered}");
     }
 
     #[test]

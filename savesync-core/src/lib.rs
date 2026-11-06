@@ -40,6 +40,7 @@ pub mod paths;
 pub mod provider;
 pub mod provider_runtime;
 pub mod restore;
+pub mod screenscraper_metadata;
 pub mod steam_metadata;
 pub mod store;
 pub mod sync;
@@ -64,7 +65,7 @@ pub use http::{HttpTransport, ReqwestTransport, RetryPolicy};
 pub use manifest::{FileEntry, Manifest, ManifestDiff};
 pub use metadata::{
     GameMetadata, MetadataCandidate, MetadataProvider, MetadataSource, best_candidate,
-    normalize_title, provider_for,
+    normalize_title, provider_for, provider_for_with,
 };
 pub use models::{
     AdapterType, Conflict, Device, Game, Location, LocationKind, RestoreJournalEntry,
@@ -78,6 +79,7 @@ pub use oauth_loopback::OAuthFlow;
 pub use provider::{LocalFolderProvider, SyncProvider};
 pub use provider_runtime::{ProviderFlavor, StatusClass};
 pub use restore::{DataPaths, RestoreMode, RestoreRequest};
+pub use screenscraper_metadata::{ScreenScraperCredentials, ScreenScraperProvider};
 pub use steam_metadata::SteamMetadataProvider;
 pub use sync::{SyncDirection, SyncReport};
 pub use watcher::{ChangeTracker, DebouncePolicy, DirtyEvent, DirtyReason, SaveWatcher};

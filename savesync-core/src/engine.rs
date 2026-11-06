@@ -23,6 +23,7 @@ use crate::models::{
 use crate::paths::validate_root;
 use crate::provider::SyncProvider;
 use crate::restore::{self, DataPaths, RestoreMode};
+use crate::screenscraper_metadata::ScreenScraperCredentials;
 use crate::store;
 use crate::sync::{self, SyncDirection, SyncReport};
 
@@ -459,14 +460,33 @@ impl SaveSyncEngine {
     /// row untouched; only a complete [`GameMetadata`] is written.
     ///
     /// `source` selects the provider through [`metadata::provider_for`], which
-    /// fails with [`Error::NotFound`] for a source that has no implementation
-    /// yet instead of silently using another one.
+    /// fails with [`Error::Auth`] for a source that needs credentials (pass
+    /// them to [`Self::fetch_metadata_with_creds`]) and with
+    /// [`Error::NotFound`] for a source that has no implementation yet, instead
+    /// of silently using another one.
     pub fn fetch_metadata(
         &mut self,
         game_id: &str,
         source: MetadataSource,
     ) -> Result<GameMetadata> {
-        let provider = metadata::provider_for(source, Some(&self.paths.metadata()))?;
+        self.fetch_metadata_with_creds(game_id, source, None)
+    }
+
+    /// Fetch metadata from a credentialed source.
+    ///
+    /// The credentials come from the caller — the desktop shell reads them from
+    /// the OS keyring — and are cloned into the provider built for this one
+    /// call. Core never stores or logs them. [`Self::fetch_metadata`] is this
+    /// method with no credentials, so keyless sources keep their exact
+    /// behaviour.
+    pub fn fetch_metadata_with_creds(
+        &mut self,
+        game_id: &str,
+        source: MetadataSource,
+        credentials: Option<&ScreenScraperCredentials>,
+    ) -> Result<GameMetadata> {
+        let provider =
+            metadata::provider_for_with(source, Some(&self.paths.metadata()), credentials)?;
         self.fetch_metadata_with(provider.as_ref(), game_id)
     }
 

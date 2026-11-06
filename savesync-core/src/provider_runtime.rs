@@ -63,11 +63,19 @@ pub const REDACTED: &str = "[redacted]";
 /// Matched case-insensitively against the text itself, so a vendor error body
 /// that echoes the offending form or query string is scrubbed before the error
 /// reaches a log, a panic message, or the UI.
-const SECRET_KEY_PREFIXES: [&str; 4] = [
+const SECRET_KEY_PREFIXES: [&str; 8] = [
     "refresh_token=",
     "access_token=",
     "client_secret=",
     "code_verifier=",
+    // ScreenScraper carries both the application credentials (`devid` /
+    // `devpassword`) and the optional end-user account (`ssid` /
+    // `sspassword`) in the query string, so vendor error bodies that echo the
+    // request must be scrubbed for those keys too.
+    "devpassword=",
+    "devid=",
+    "sspassword=",
+    "ssid=",
 ];
 
 /// Authorization schemes whose parameter is a credential.
@@ -186,6 +194,15 @@ pub enum ProviderFlavor {
     /// Steam throttles with `429`; there is no quota body to recognize, so a
     /// `403` stays a permanent refusal exactly like WebDAV.
     SteamStore,
+    /// The ScreenScraper API.
+    ///
+    /// ScreenScraper answers bad application or user credentials with a `403`
+    /// *and* reports quota exhaustion the same way, distinguished only by the
+    /// message, so a `403` with a quota signature is retried and every other
+    /// `403` is an authentication failure. Quota exhaustion also arrives inside
+    /// `200` JSON payloads; [`has_quota_signature`] is public so that path can
+    /// reuse the same vocabulary.
+    ScreenScraper,
 }
 
 /// How one HTTP response is treated at the provider boundary.
@@ -281,8 +298,12 @@ pub fn execute_idempotent(
     })
 }
 
-/// Whether a `403` body carries the provider's throttling signature.
-fn has_quota_signature(body: &[u8], flavor: ProviderFlavor) -> bool {
+/// Whether a body carries the provider's throttling signature.
+///
+/// Public so a provider that reports quota exhaustion inside a `200` API
+/// payload (ScreenScraper) reuses the same vocabulary as the status classifier
+/// instead of duplicating keyword lists.
+pub fn has_quota_signature(body: &[u8], flavor: ProviderFlavor) -> bool {
     match flavor {
         // Keep Drive's existing behaviour exactly (see `http`).
         ProviderFlavor::GoogleDrive => is_retryable_status(403, body),
@@ -312,6 +333,20 @@ fn has_quota_signature(body: &[u8], flavor: ProviderFlavor) -> bool {
         // The Steam Store API has no documented quota body; `429` is already
         // transient by status, so a `403` is never retried.
         ProviderFlavor::SteamStore => false,
+        // ScreenScraper reports both bad credentials and quota exhaustion with
+        // a `403`; only the quota message is retryable.
+        ProviderFlavor::ScreenScraper => {
+            let text = String::from_utf8_lossy(body).to_lowercase();
+            [
+                "quota",
+                "limite",
+                "trop de requ",
+                "nombre maximum",
+                "maximum de requ",
+            ]
+            .iter()
+            .any(|needle| text.contains(needle))
+        }
     }
 }
 
@@ -391,6 +426,8 @@ mod tests {
             ProviderFlavor::WebDav,
             ProviderFlavor::S3,
             ProviderFlavor::Dropbox,
+            ProviderFlavor::SteamStore,
+            ProviderFlavor::ScreenScraper,
         ] {
             assert_eq!(classify_status(200, b"", flavor), StatusClass::Success);
             assert_eq!(classify_status(204, b"", flavor), StatusClass::Success);
@@ -448,6 +485,25 @@ mod tests {
             classify_status(403, b"AccessDenied", ProviderFlavor::S3),
             StatusClass::Auth
         );
+
+        // ScreenScraper answers quota exhaustion and bad credentials with the
+        // same status; only the quota message is retryable.
+        assert_eq!(
+            classify_status(
+                403,
+                "Erreur : Nombre maximum de requêtes atteint".as_bytes(),
+                ProviderFlavor::ScreenScraper
+            ),
+            StatusClass::Transient
+        );
+        assert_eq!(
+            classify_status(
+                403,
+                "Erreur de login : identifiants incorrects".as_bytes(),
+                ProviderFlavor::ScreenScraper
+            ),
+            StatusClass::Auth
+        );
     }
 
     #[test]
@@ -483,6 +539,11 @@ mod tests {
             ("ACCESS_TOKEN=at-secret", "at-secret"),
             ("client_secret=cs-secret", "cs-secret"),
             ("code_verifier=cv-secret", "cv-secret"),
+            // ScreenScraper credentials travel in the query string.
+            ("devid=dev-secret", "dev-secret"),
+            ("devpassword=dev-pw", "dev-pw"),
+            ("ssid=user-secret", "user-secret"),
+            ("sspassword=user-pw", "user-pw"),
         ];
         for (text, secret) in cases {
             let scrubbed = redact_secrets(text);
