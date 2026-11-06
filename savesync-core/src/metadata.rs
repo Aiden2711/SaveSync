@@ -178,8 +178,8 @@ impl<'a> MetadataCreds<'a> {
 ///
 /// This is [`provider_for_with_creds`] with an empty [`MetadataCreds`], kept so
 /// every existing caller is unchanged: Steam behaves exactly as before, and a
-/// credentialed source fails with [`Error::Auth`] instead of silently searching
-/// without the credentials it needs.
+/// credentialed source fails with [`Error::Config`] instead of silently
+/// searching without the credentials it needs.
 ///
 /// `cache_dir` may be `None` for a provider that keeps its search index in
 /// memory only (tests).
@@ -217,7 +217,8 @@ pub fn provider_for_with(
 ///
 /// Credentials are never stored by core: they are cloned into the returned
 /// provider and dropped with it. A credentialed source without its credentials
-/// is [`Error::Auth`]; Steam ignores them, so it stays keyless.
+/// is [`Error::Config`] — nothing was sent, and nothing was rejected — while
+/// Steam ignores them, so it stays keyless.
 pub fn provider_for_with_creds(
     source: MetadataSource,
     cache_dir: Option<&Path>,
@@ -225,18 +226,19 @@ pub fn provider_for_with_creds(
 ) -> Result<Box<dyn MetadataProvider>> {
     match source {
         MetadataSource::Steam => {
-            let transport = ReqwestTransport::default();
+            // The storefront search needs no cache, but the published app list
+            // it falls back to is worth keeping between runs when the engine
+            // supplies a metadata directory.
+            let transport = std::sync::Arc::new(ReqwestTransport::default());
             Ok(Box::new(match cache_dir {
-                Some(directory) => {
-                    SteamMetadataProvider::with_cache_dir(std::sync::Arc::new(transport), directory)
-                }
-                None => SteamMetadataProvider::new(std::sync::Arc::new(transport)),
+                Some(directory) => SteamMetadataProvider::with_cache_dir(transport, directory),
+                None => SteamMetadataProvider::new(transport),
             }))
         }
         MetadataSource::ScreenScraper => {
             let credentials = credentials.screenscraper.ok_or_else(|| {
-                Error::Auth(format!(
-                    "{source} requires caller-supplied developer credentials"
+                Error::Config(format!(
+                    "{source} requires application developer credentials (dev id and dev password)"
                 ))
             })?;
             let transport = ReqwestTransport::default();
@@ -247,8 +249,8 @@ pub fn provider_for_with_creds(
         }
         MetadataSource::Igdb => {
             let credentials = credentials.igdb.ok_or_else(|| {
-                Error::Auth(format!(
-                    "{source} requires caller-supplied Twitch client credentials"
+                Error::Config(format!(
+                    "{source} requires a Twitch client id and client secret"
                 ))
             })?;
             let transport = ReqwestTransport::default();
@@ -430,7 +432,7 @@ mod tests {
             let error = provider_for(source, None)
                 .err()
                 .expect("credentials are required");
-            assert!(matches!(error, Error::Auth(_)), "{error:?}");
+            assert!(matches!(error, Error::Config(_)), "{error:?}");
             assert!(
                 error.to_string().contains(source.as_str()),
                 "the error names the source: {error}"
@@ -443,7 +445,11 @@ mod tests {
         let error = provider_for(MetadataSource::ScreenScraper, None)
             .err()
             .expect("credentials are required");
-        assert!(matches!(error, Error::Auth(_)), "{error:?}");
+        assert!(matches!(error, Error::Config(_)), "{error:?}");
+        // A missing configuration is not a rejected credential set and not a
+        // "the provider has no match" answer.
+        assert!(!matches!(error, Error::Auth(_)), "{error:?}");
+        assert!(!matches!(error, Error::NotFound(_)), "{error:?}");
 
         let credentials = ScreenScraperCredentials::developer("dev", "dev-password")
             .with_softname("savesync-test");
@@ -460,7 +466,7 @@ mod tests {
         assert_eq!(provider.source(), MetadataSource::Igdb);
         assert!(matches!(
             provider_for_with(MetadataSource::Igdb, None, Some(&credentials)),
-            Err(Error::Auth(_))
+            Err(Error::Config(_))
         ));
     }
 }

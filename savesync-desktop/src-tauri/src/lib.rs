@@ -2091,6 +2091,19 @@ fn metadata_fetch_error(error: &savesync_core::Error, source: MetadataSource) ->
                 "The metadata source rejected the request. Try again later.".to_string()
             }
         },
+        // Nothing was sent and nothing was rejected: name what to configure
+        // instead of telling the user to log in again.
+        savesync_core::Error::Config(_) => match source {
+            MetadataSource::ScreenScraper => {
+                "ScreenScraper developer credentials are missing or incomplete. Add both the developer id and the developer password in Settings.".to_string()
+            }
+            MetadataSource::Igdb => {
+                "IGDB needs a Twitch client id and client secret. Add both in Settings.".to_string()
+            }
+            MetadataSource::Steam => {
+                "The metadata source is not configured in this build.".to_string()
+            }
+        },
         savesync_core::Error::NotFound(_) => {
             "No metadata found for this game from the selected source.".to_string()
         }
@@ -4038,6 +4051,7 @@ mod tests {
             )),
             savesync_core::Error::Network(format!("connection reset by {sentinel}")),
             savesync_core::Error::InvalidState(sentinel.to_string()),
+            savesync_core::Error::Config(format!("devpassword={sentinel} missing")),
         ];
 
         for error in errors {
@@ -4064,6 +4078,14 @@ mod tests {
             )
             .contains("No metadata found")
         );
+
+        // Misconfiguration is not a rejected credential: the advice names what
+        // to configure instead of telling the user their saved pair is wrong.
+        let config = savesync_core::Error::Config("x".into());
+        let config_screenscraper = metadata_fetch_error(&config, MetadataSource::ScreenScraper);
+        assert!(config_screenscraper.contains("developer credentials"));
+        assert!(!config_screenscraper.contains("rejected"));
+        assert!(!metadata_fetch_error(&config, MetadataSource::Igdb).contains("rejected"));
     }
 
     /// Validation happens before persistence, so a credential set core would

@@ -127,8 +127,13 @@ impl ScreenScraperCredentials {
             .iter()
             .any(|value| value.trim().is_empty());
         if missing {
-            return Err(Error::Auth(
-                "ScreenScraper developer credentials are incomplete".to_string(),
+            // Nothing was sent and nothing was rejected: this is a missing
+            // application configuration, not an authentication failure, and it
+            // must not be reported as "no metadata found" either.
+            return Err(Error::Config(
+                "ScreenScraper requires a complete application developer pair (dev id and dev password); \
+                 add both before searching"
+                    .to_string(),
             ));
         }
         // A user account is optional, but a half-specified one is a
@@ -140,8 +145,9 @@ impl ScreenScraperCredentials {
             || blank(&self.ssid)
             || blank(&self.sspassword)
         {
-            return Err(Error::Auth(
-                "ScreenScraper user credentials need both ssid and sspassword".to_string(),
+            return Err(Error::Config(
+                "ScreenScraper user credentials need both the username (ssid) and its password"
+                    .to_string(),
             ));
         }
         Ok(())
@@ -812,16 +818,47 @@ mod tests {
         assert!(!leaked.to_string().contains("devid=dev"), "{leaked}");
     }
 
+    /// Locally incomplete credentials are a configuration gap: nothing was sent
+    /// and nothing was rejected. A credential set the service actually refuses
+    /// stays [`Error::Auth`], and a missing catalogue entry stays
+    /// [`Error::NotFound`].
     #[test]
     fn credentials_reject_an_incomplete_set() {
-        let empty = ScreenScraperCredentials::developer("", "pw");
-        assert!(matches!(empty.validate(), Err(Error::Auth(_))));
+        let empty = ScreenScraperCredentials::developer("", "pw-sentinel-secret");
+        let error = empty.validate().unwrap_err();
+        assert!(matches!(error, Error::Config(_)), "{error:?}");
+        assert!(!matches!(error, Error::Auth(_)), "{error:?}");
+        assert!(!matches!(error, Error::NotFound(_)), "{error:?}");
+        // Actionable: it names both halves the application must supply and
+        // never echoes the supplied value.
+        assert!(error.to_string().contains("dev id"), "{error}");
+        assert!(error.to_string().contains("dev password"), "{error}");
+        assert!(!error.to_string().contains("pw-sentinel-secret"), "{error}");
 
-        let partial_user = ScreenScraperCredentials::developer("dev", "pw").with_user("user", " ");
-        assert!(matches!(partial_user.validate(), Err(Error::Auth(_))));
+        for partial in [
+            ScreenScraperCredentials::developer("dev", "pw").with_user("ssid-sentinel", " "),
+            ScreenScraperCredentials::developer("dev", "pw").with_user(" ", "sspassword-sentinel"),
+        ] {
+            let error = partial
+                .validate()
+                .expect_err("half a user pair is a configuration gap");
+            assert!(matches!(error, Error::Config(_)), "{error:?}");
+            assert!(!error.to_string().contains("ssid-sentinel"), "{error}");
+            assert!(
+                !error.to_string().contains("sspassword-sentinel"),
+                "{error}"
+            );
+        }
 
         let valid = ScreenScraperCredentials::developer("dev", "pw");
         assert!(valid.validate().is_ok());
+
+        // Complete credentials that the service refuses are an auth failure.
+        let rejected = classify_api_error("Erreur de login : identifiants incorrects");
+        assert!(matches!(rejected, Error::Auth(_)), "{rejected:?}");
+        // A provider answer with no matching game is not a credential problem.
+        let no_match = classify_api_error("Rom non trouvée");
+        assert!(matches!(no_match, Error::NotFound(_)), "{no_match:?}");
     }
 
     #[test]

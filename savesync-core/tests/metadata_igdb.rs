@@ -539,7 +539,7 @@ fn engine_round_trip_caches_and_reuses_the_details_request() {
 }
 
 #[test]
-fn engine_without_credentials_reports_an_auth_error() {
+fn engine_without_credentials_reports_a_configuration_error() {
     let dir = tempfile::tempdir().unwrap();
     let mut engine = SaveSyncEngine::open(dir.path()).unwrap();
     let game = engine
@@ -547,6 +547,8 @@ fn engine_without_credentials_reports_an_auth_error() {
         .unwrap();
 
     // No credentials at all: the registry refuses before any request is made.
+    // Nothing was sent and nothing was rejected, so this is a missing
+    // configuration — not an auth failure and not "no such game".
     for error in [
         engine
             .fetch_metadata_with_all_creds(&game.id, MetadataSource::Igdb, MetadataCreds::default())
@@ -556,7 +558,8 @@ fn engine_without_credentials_reports_an_auth_error() {
             .unwrap_err(),
         provider_for(MetadataSource::Igdb, None).err().unwrap(),
     ] {
-        assert!(matches!(error, Error::Auth(_)), "{error:?}");
+        assert!(matches!(error, Error::Config(_)), "{error:?}");
+        assert!(!matches!(error, Error::Auth(_)), "{error:?}");
         assert!(error.to_string().contains("igdb"), "{error}");
     }
     assert!(engine.cached_metadata(&game.id).unwrap().is_none());

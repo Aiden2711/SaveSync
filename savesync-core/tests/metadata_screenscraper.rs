@@ -408,7 +408,7 @@ fn engine_round_trip_caches_and_reuses_the_details_request() {
 }
 
 #[test]
-fn engine_without_credentials_reports_an_auth_error() {
+fn engine_without_credentials_reports_a_configuration_error() {
     let dir = tempfile::tempdir().unwrap();
     let mut engine = SaveSyncEngine::open(dir.path()).unwrap();
     let game = engine
@@ -416,11 +416,13 @@ fn engine_without_credentials_reports_an_auth_error() {
         .unwrap();
 
     // `fetch_metadata_with_creds(.., None)` builds the production provider, so
-    // this is the offline path: validation fails before any request.
+    // this is the offline path: validation fails before any request, which is a
+    // missing configuration rather than a rejected credential set.
     let error = engine
         .fetch_metadata_with_creds(&game.id, MetadataSource::ScreenScraper, None)
         .unwrap_err();
-    assert!(matches!(error, Error::Auth(_)), "{error:?}");
+    assert!(matches!(error, Error::Config(_)), "{error:?}");
+    assert!(!matches!(error, Error::Auth(_)), "{error:?}");
     assert!(engine.cached_metadata(&game.id).unwrap().is_none());
 }
 

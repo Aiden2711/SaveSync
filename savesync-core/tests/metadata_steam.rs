@@ -1,4 +1,5 @@
-//! Steam Store metadata provider and cache, against a scripted transport.
+//! Steam Store metadata provider and fallback index, against a scripted
+//! transport.
 //!
 //! Everything runs offline: the provider is handed a [`HttpTransport`] that
 //! replays JSON fixtures, and the engine caches the normalized row only inside
@@ -15,12 +16,15 @@ use savesync_core::http::{
 use savesync_core::metadata::{MetadataProvider, MetadataSource};
 use savesync_core::models::AdapterType;
 use savesync_core::steam_metadata::{
-    APP_LIST_CACHE_FILE, MAX_APP_LIST_BYTES, SteamMetadataProvider,
+    APP_LIST_CACHE_FILE, APP_LIST_URL, MAX_APP_LIST_BYTES, MAX_SEARCH_RESULTS, STORE_SEARCH_URL,
+    SteamMetadataProvider,
 };
 use savesync_core::{Error, SaveSyncEngine};
 use serde_json::{Value, json};
 
-/// Real Steam ids keep the fixture honest about the app-list shape.
+/// Real Steam ids keep the fixtures honest about the real responses.
+const PORTAL_APPID: u32 = 400;
+const PORTAL_2_APPID: u32 = 620;
 const HADES_APPID: u32 = 1_145_360;
 
 struct ScriptedTransport {
@@ -76,6 +80,16 @@ fn json_response(status: u16, value: Value) -> HttpResponse {
     }
 }
 
+/// A `storesearch` answer: the storefront's own shape, `type` included because
+/// bundles and packages share the list but have no `appdetails` entry.
+fn store_search_response(items: &[(&str, u32, &str)]) -> HttpResponse {
+    let items: Vec<Value> = items
+        .iter()
+        .map(|(kind, id, name)| json!({"type": kind, "id": id, "name": name, "price": {}}))
+        .collect();
+    json_response(200, json!({"total": items.len(), "items": items}))
+}
+
 fn app_list_response(apps: &[(u32, &str)]) -> HttpResponse {
     let apps: Vec<Value> = apps
         .iter()
@@ -112,27 +126,29 @@ fn fast_policy() -> RetryPolicy {
     }
 }
 
+/// The reported bug: Portal resolved to "no metadata found" because the app
+/// list was too large. Storefront search answers it in one small request.
 #[test]
-fn search_normalizes_titles_and_reports_platform_hints() {
-    let transport = Arc::new(ScriptedTransport::new(vec![app_list_response(&[
-        (HADES_APPID, "Hades"),
-        (1_145_361, "Hades II"),
-        (1_145_362, "Hades' Star"),
-        (999, "Super Hades Deluxe"),
-        (5, "Unrelated Game"),
+fn search_uses_the_storefront_endpoint_and_normalizes_the_term() {
+    let transport = Arc::new(ScriptedTransport::new(vec![store_search_response(&[
+        ("app", PORTAL_2_APPID, "Portal 2"),
+        ("app", PORTAL_APPID, "Portal"),
+        ("app", 374_040, "Portal Knights"),
+        ("bundle", 23_456, "Portal Bundle"),
+        ("app", 9, "Unrelated Game"),
         // Duplicate id and the sentinel id 0 must be dropped.
-        (HADES_APPID, "Hades™"),
-        (0, "Hades"),
+        ("app", PORTAL_APPID, "Portal™"),
+        ("app", 0, "Portal"),
     ])]));
     let provider = SteamMetadataProvider::new(transport.clone());
 
-    let candidates = provider.search("HADES™").unwrap();
-    let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
-    assert_eq!(
-        names,
-        vec!["Hades", "Hades II", "Hades' Star", "Super Hades Deluxe"]
-    );
-    assert_eq!(candidates[0].source_id, HADES_APPID.to_string());
+    let candidates = provider.search("Portal™").unwrap();
+    let ids: Vec<&str> = candidates
+        .iter()
+        .map(|candidate| candidate.source_id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["400", "620", "374040"]);
+    assert_eq!(candidates[0].name, "Portal");
     assert!(
         candidates
             .iter()
@@ -140,23 +156,45 @@ fn search_normalizes_titles_and_reports_platform_hints() {
     );
     assert!(candidates.iter().all(|c| c.release_year.is_none()));
 
-    // One request: the full list is downloaded once and matched in memory.
+    // One small request per lookup: the app list is never downloaded.
     assert_eq!(transport.calls(), 1);
     let request = &transport.requests()[0];
-    assert!(request.url.starts_with("https://api.steampowered.com/"));
-    assert!(
-        request.download_to.is_some(),
-        "the list must stream to disk instead of being buffered"
-    );
-    assert_eq!(request.max_download_bytes, Some(MAX_APP_LIST_BYTES));
+    assert!(request.url.starts_with(STORE_SEARCH_URL), "{}", request.url);
+    assert!(request.url.contains("term=portal"), "{}", request.url);
+    assert!(request.download_to.is_none());
+}
 
-    // The second search reuses the in-memory list.
-    provider.search("hades ii").unwrap();
-    assert_eq!(transport.calls(), 1);
+/// The storefront answers `portal` with `Portal 2` first; the stored title wins,
+/// and the exact app id is what a fetch stores.
+#[test]
+fn an_exact_normalized_match_wins_over_the_storefront_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut engine = SaveSyncEngine::open(dir.path()).unwrap();
+    let game = engine
+        .enroll_game("Portal", AdapterType::CustomDirectory)
+        .unwrap();
+
+    let transport = Arc::new(ScriptedTransport::new(vec![
+        store_search_response(&[
+            ("app", PORTAL_2_APPID, "Portal 2"),
+            ("app", PORTAL_APPID, "Portal"),
+        ]),
+        details_response(
+            PORTAL_APPID,
+            json!({"name": "Portal", "release_date": {"date": "10 Oct, 2007"}}),
+        ),
+    ]));
+    let provider = SteamMetadataProvider::new(transport.clone());
+
+    let fetched = engine.fetch_metadata_with(&provider, &game.id).unwrap();
+    assert_eq!(fetched.source_id, PORTAL_APPID.to_string());
+    assert_eq!(fetched.name, "Portal");
+    assert_eq!(fetched.release_year, Some(2007));
+    assert_eq!(transport.calls(), 2, "one search + one details request");
 }
 
 #[test]
-fn empty_title_never_downloads_the_app_list() {
+fn empty_title_never_queries_steam() {
     let transport = Arc::new(ScriptedTransport::new(Vec::new()));
     let provider = SteamMetadataProvider::new(transport.clone());
 
@@ -164,37 +202,82 @@ fn empty_title_never_downloads_the_app_list() {
     assert_eq!(transport.calls(), 0);
 }
 
+/// A storefront `200` with no item is the genuine "no such app" answer.
 #[test]
-fn unknown_title_is_an_empty_result() {
-    let transport = Arc::new(ScriptedTransport::new(vec![app_list_response(&[(
-        HADES_APPID,
-        "Hades",
-    )])]));
-    let provider = SteamMetadataProvider::new(transport);
+fn unknown_title_is_an_empty_result_without_downloading_the_app_list() {
+    let transport = Arc::new(ScriptedTransport::new(vec![store_search_response(&[])]));
+    let provider = SteamMetadataProvider::new(transport.clone());
 
     assert!(provider.search("Celeste").unwrap().is_empty());
+    assert_eq!(transport.calls(), 1);
+    assert!(
+        transport
+            .requests()
+            .iter()
+            .all(|request| request.url != APP_LIST_URL),
+        "a healthy search must not download the fallback list"
+    );
+    // Checked at compile time: the candidate tail must stay bounded but wide
+    // enough for the storefront's own ordering.
+    const _: () = assert!(MAX_SEARCH_RESULTS >= 20);
 }
 
+/// A failed search falls back to the published list, which is downloaded once
+/// and reused across restarts.
 #[test]
-fn a_fresh_app_list_cache_survives_a_restart() {
+fn a_failed_search_falls_back_to_the_cached_app_list() {
     let dir = tempfile::tempdir().unwrap();
-    let first_transport = Arc::new(ScriptedTransport::new(vec![app_list_response(&[(
-        HADES_APPID,
-        "Hades",
-    )])]));
+    let first_transport = Arc::new(ScriptedTransport::new(vec![
+        // 404 is not retried: the endpoint moved or was withdrawn.
+        json_response(404, json!({})),
+        app_list_response(&[(HADES_APPID, "Hades")]),
+    ]));
     let first = SteamMetadataProvider::with_cache_dir(first_transport.clone(), dir.path());
-    assert_eq!(first.search("Hades").unwrap().len(), 1);
-    assert_eq!(first_transport.calls(), 1);
+
+    let candidates = first.search("Hades").unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].source_id, HADES_APPID.to_string());
+
+    let requests = first_transport.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].url.starts_with(STORE_SEARCH_URL));
+    assert_eq!(requests[1].url, APP_LIST_URL);
+    assert!(
+        requests[1].download_to.is_some(),
+        "the list must stream to disk instead of being buffered"
+    );
+    assert_eq!(requests[1].max_download_bytes, Some(MAX_APP_LIST_BYTES));
 
     let cache_file = dir.path().join(APP_LIST_CACHE_FILE);
     assert!(cache_file.is_file(), "the app list is persisted");
 
     // A second provider with an empty transport proves the file is reused: any
-    // request would fail with "no scripted response".
+    // download would fail with "no scripted response".
     let second_transport = Arc::new(ScriptedTransport::new(Vec::new()));
     let second = SteamMetadataProvider::with_cache_dir(second_transport.clone(), dir.path());
     assert_eq!(second.search("Hades").unwrap().len(), 1);
-    assert_eq!(second_transport.calls(), 0);
+    assert!(
+        second_transport
+            .requests()
+            .iter()
+            .all(|request| request.url != APP_LIST_URL),
+        "the cached list must not be re-downloaded"
+    );
+}
+
+/// Neither path may report "no match" when the service failed.
+#[test]
+fn a_failed_search_with_no_usable_list_is_not_a_missing_match() {
+    let transport = Arc::new(ScriptedTransport::new(vec![
+        json_response(404, json!({})),
+        // GetAppList has been withdrawn upstream and answers 404.
+        json_response(404, json!({})),
+    ]));
+    let provider = SteamMetadataProvider::new(transport);
+
+    let error = provider.search("Portal").unwrap_err();
+    assert!(!matches!(error, Error::NotFound(_)), "{error:?}");
+    assert!(matches!(error, Error::Provider { .. }), "{error:?}");
 }
 
 #[test]
@@ -327,8 +410,10 @@ fn engine_caches_fetched_metadata_for_the_game() {
         .unwrap();
 
     let transport = Arc::new(ScriptedTransport::new(vec![
-        app_list_response(&[(HADES_APPID, "Hades")]),
+        store_search_response(&[("app", HADES_APPID, "Hades")]),
         details_response(HADES_APPID, hades_details()),
+        // The second fetch repeats the search but reuses the cached details.
+        store_search_response(&[("app", HADES_APPID, "Hades")]),
     ]));
     let provider = SteamMetadataProvider::new(transport.clone());
 
@@ -337,12 +422,12 @@ fn engine_caches_fetched_metadata_for_the_game() {
 
     let cached = engine.cached_metadata(&game.id).unwrap().unwrap();
     assert_eq!(cached, fetched);
-    assert_eq!(transport.calls(), 2, "one list + one details request");
+    assert_eq!(transport.calls(), 2, "one search + one details request");
 
-    // A second fetch reuses both provider caches and rewrites the same row.
+    // A second fetch reuses the provider's details cache and rewrites the row.
     let again = engine.fetch_metadata_with(&provider, &game.id).unwrap();
     assert_eq!(again, fetched);
-    assert_eq!(transport.calls(), 2);
+    assert_eq!(transport.calls(), 3, "the search is repeated per fetch");
     assert_eq!(engine.cached_metadata(&game.id).unwrap().unwrap(), fetched);
 }
 
@@ -362,7 +447,7 @@ fn a_failed_fetch_never_overwrites_a_cached_row() {
         .unwrap();
 
     let good = Arc::new(ScriptedTransport::new(vec![
-        app_list_response(&[(HADES_APPID, "Hades")]),
+        store_search_response(&[("app", HADES_APPID, "Hades")]),
         details_response(HADES_APPID, hades_details()),
     ]));
     let good_provider = SteamMetadataProvider::new(good);

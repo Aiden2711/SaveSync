@@ -24,6 +24,13 @@ pub enum Error {
     #[error("authentication error: {0}")]
     Auth(String),
 
+    /// A provider cannot be called at all until something is configured: a
+    /// missing application credential pair, or an incomplete one. Distinct from
+    /// [`Self::Auth`], which means a complete credential set was rejected, and
+    /// from [`Self::NotFound`], which means the remote has no matching entry.
+    #[error("configuration error: {0}")]
+    Config(String),
+
     #[error("storage provider error (HTTP {status}): {message}")]
     Provider { status: u16, message: String },
 

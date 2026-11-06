@@ -151,7 +151,9 @@ impl IgdbCredentials {
             .iter()
             .any(|value| value.trim().is_empty());
         if missing {
-            return Err(Error::Auth(
+            // Nothing was sent and nothing was rejected: a missing Twitch
+            // application is a configuration gap, not a failed authentication.
+            return Err(Error::Config(
                 "IGDB needs both a Twitch client id and client secret".to_string(),
             ));
         }
@@ -813,11 +815,11 @@ mod tests {
     fn credentials_reject_an_incomplete_set() {
         assert!(matches!(
             IgdbCredentials::new("", "secret").validate(),
-            Err(Error::Auth(_))
+            Err(Error::Config(_))
         ));
         assert!(matches!(
             IgdbCredentials::new("id", "  ").validate(),
-            Err(Error::Auth(_))
+            Err(Error::Config(_))
         ));
         assert!(IgdbCredentials::new("id", "secret").validate().is_ok());
     }
