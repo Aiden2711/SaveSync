@@ -934,6 +934,22 @@ label {
 }
 
 /*
+ * The one featured banner. The pinned game leads the wall and takes the whole
+ * row while the grid has few columns; from 760px it takes three tracks, which
+ * reads as a Steam-style wide capsule at roughly the height of a portrait tile
+ * rather than a stretched poster. Every other cell stays one track.
+ */
+.tile-cell--featured {
+  grid-column: 1 / -1;
+}
+
+@media (min-width: 760px) {
+  .tile-cell--featured {
+    grid-column: span 3;
+  }
+}
+
+/*
  * The tile is a bare channel, not a card: transparent fill, a transparent 1px
  * border that only exists to hold the geometry (and the selected --line-strong
  * edge), and no shadow. Title and meta sit straight on the dot-grid field. The
@@ -1058,6 +1074,15 @@ label {
   border-radius: var(--radius-panel);
   background: var(--surface-2);
   transition: box-shadow var(--dur) var(--ease);
+}
+
+/*
+ * The featured banner swaps the portrait slot for the wide capsule aspect so the
+ * 920x430 artwork fills its frame without letterboxing. Every other tile keeps
+ * the 2:3 poster box above.
+ */
+.tile--featured .tile-art {
+  aspect-ratio: 920 / 430;
 }
 
 /*

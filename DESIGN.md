@@ -200,14 +200,20 @@ focus. It must not become the ordinary border of every card.
   buttons and takes leftover space as symmetric auto margins; below 760px the divider is
   hidden, labels are visually clipped (still in the DOM and the accessible name), targets stay
   44px wide, and the chip takes the remaining width.
-- **Tiles:** a bare channel, not a card — transparent fill, transparent 1px border for geometry,
+- **Tiles:** a bare channel, not a card - transparent fill, transparent 1px border for geometry,
   no shadow. The 2:3 artwork sits in a `--surface-2` matte with a 4px inset, one `--hairline`
   frame just inside its edge, and the cover art filling the box (never letterboxed). Title
   (Fredoka 600, 18px, two-line clamp) and adapter/snapshot meta (`--ink-2`, 14px) sit **directly
-  on the dot-grid field** — there is no label plate in any state. Selection draws a 2px
+  on the dot-grid field** - there is no label plate in any state. Selection draws a 2px
   `--grad-warm` ring through a mask, keeps the `--line-strong` border, adds the hue glow, and
   reveals the check badge; keyboard focus is a separate neutral `--focus-ring` outline drawn
   outside the card. Hover raises the artwork, not the label.
+- **Featured banner tile:** at most one tile is promoted, and only by the user - "Feature on
+  library" in the tile's context menu or the detail view pins it, "Remove from featured" unpins
+  it. Nothing promotes a game automatically. The pinned game leads the wall in a full-row cell
+  (three tracks from 760px) with a 920x430 wide cover from the wide cache, or the generated wide
+  monogram when no wide cover exists; a cached 2:3 portrait is never stretched into the banner.
+  Every other tile keeps the 2:3 channel, and unpinning restores the uniform grid.
 - **Detail view:** cover on the left (160px, 120px under 760px), title and meta beside it,
   actions on the right, back control above. Back returns to the grid.
 - **Context menu:** right-click (or the `ContextMenu` key / Shift+F10) opens a `role="menu"`

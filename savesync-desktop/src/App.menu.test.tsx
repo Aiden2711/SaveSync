@@ -88,7 +88,7 @@ describe("game tile context menu", () => {
     expect(screen.queryByRole("menu")).toBeNull();
   });
 
-  it("shows exactly 7 menu items with correct labels in order", async () => {
+  it("shows exactly 8 menu items with correct labels in order", async () => {
     render(<App />);
     await screen.findByRole("button", { name: /Hades/ });
 
@@ -100,7 +100,7 @@ describe("game tile context menu", () => {
       menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
     );
 
-    expect(items).toHaveLength(7);
+    expect(items).toHaveLength(8);
     expect(items.map((item) => item.textContent)).toEqual([
       "Open details",
       "Backup now",
@@ -108,6 +108,7 @@ describe("game tile context menu", () => {
       "Sync now",
       "Fetch cover art",
       "Choose cover art…",
+      "Feature on library",
       "Remove from library…",
     ]);
   });

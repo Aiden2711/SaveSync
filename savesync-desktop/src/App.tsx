@@ -362,6 +362,11 @@ export default function App() {
    * cover appear here; everything else keeps the generated monogram.
    */
   const [coverUrls, setCoverUrls] = useState<Record<string, string>>({});
+  /**
+   * Resolved wide (`?kind=wide`) cover URLs, kept apart from the portrait map
+   * because the featured tile never falls back from one shape to the other.
+   */
+  const [wideCoverUrls, setWideCoverUrls] = useState<Record<string, string>>({});
   /** Open "Choose cover art" modal, or null when it is closed. */
   const [coverPicker, setCoverPicker] = useState<CoverPickerState | null>(null);
   /**
@@ -514,36 +519,48 @@ export default function App() {
    * Resolve cover URLs for games that actually have a cached cover.
    *
    * `cover_url` is never invoked for a game whose `cover_path` is null, so the
-   * common case (no artwork fetched yet) costs zero IPC. A per-game failure is
+   * common case (no artwork fetched yet) costs zero IPC. Wide URLs are resolved
+   * only for the featured game with a cached wide cover. A per-game failure is
    * swallowed: a missing cover is not worth an error banner, and the tile
    * simply keeps its generated monogram.
    *
    * The cache-busting query is derived from `updated_at`, which the engine bumps
-   * on every `set_cover_path`, so a re-fetched cover gets a new URL.
+   * on every cover mutation, so a re-fetched cover gets a new URL. It is
+   * appended with `&` when the URL already carries `?kind=wide`, because the
+   * scheme handler parses the first `?` only.
    */
   const loadCoverUrls = useCallback(async (list: Game[]) => {
-    const withCovers = list.filter((game) => game.cover_path);
-    if (withCovers.length === 0) {
-      // Also drops URLs for games that were unlinked since the last load.
-      setCoverUrls({});
-      return;
-    }
-    const resolved = await Promise.all(
-      withCovers.map(async (game) => {
-        try {
-          const url = await api.coverUrl(game.id);
-          if (!url) return null;
-          return [game.id, `${url}?v=${encodeURIComponent(game.updated_at)}`] as const;
-        } catch {
-          return null;
-        }
-      }),
-    );
-    const next: Record<string, string> = {};
-    for (const entry of resolved) {
-      if (entry) next[entry[0]] = entry[1];
-    }
-    setCoverUrls(next);
+    const withPortrait = list.filter((game) => game.cover_path);
+    const withWide = list.filter((game) => game.featured && game.wide_cover_path);
+    const resolve = async (entries: Game[], kind: CoverKind = "portrait") => {
+      const resolved = await Promise.all(
+        entries.map(async (game) => {
+          try {
+            const url = await api.coverUrl(game.id, kind);
+            if (!url) return null;
+            const separator = url.includes("?") ? "&" : "?";
+            return [
+              game.id,
+              `${url}${separator}v=${encodeURIComponent(game.updated_at)}`,
+            ] as const;
+          } catch {
+            return null;
+          }
+        }),
+      );
+      const next: Record<string, string> = {};
+      for (const entry of resolved) {
+        if (entry) next[entry[0]] = entry[1];
+      }
+      return next;
+    };
+
+    const [portrait, wide] = await Promise.all([
+      resolve(withPortrait),
+      resolve(withWide, "wide"),
+    ]);
+    setCoverUrls(portrait);
+    setWideCoverUrls(wide);
   }, []);
 
   const loadGames = useCallback(async () => {
@@ -1308,6 +1325,38 @@ export default function App() {
     }
   }, [loadGames, pendingUnlinkId, run]);
 
+  /**
+   * Pin or unpin the library's single featured game.
+   *
+   * Manual only: enrollment and discovery never promote a game on their own.
+   * The banner moves optimistically, then the authoritative list is re-read —
+   * which also restores the previous pin if the write fails — and a failure
+   * surfaces through the existing error banner (`run`).
+   */
+  const setFeaturedGame = useCallback(
+    async (gameId: string, featured: boolean) => {
+      setGames((current) =>
+        current.map((game) => ({
+          ...game,
+          featured: featured && game.id === gameId,
+        })),
+      );
+      const ok = await run("Updating featured game", async () => {
+        if (featured) {
+          await api.setFeatured(gameId);
+        } else {
+          await api.clearFeatured();
+        }
+        return true;
+      });
+      await loadGames();
+      if (ok) {
+        setNotice(featured ? "Featured game updated." : "Featured game cleared.");
+      }
+    },
+    [loadGames, run],
+  );
+
   const openUnlinkDialog = useCallback((gameId: string) => {
     setPendingUnlinkId(gameId);
     setUnlinkConfirming(true);
@@ -1342,6 +1391,16 @@ export default function App() {
   }, [enrollOpen, selectedId]);
 
   function renderLibraryView() {
+    /*
+     * The featured game leads the wall as a wide banner; the rest keep their
+     * original order and 2:3 shape. `featured` is a manual pin, and the schema
+     * enforces at most one, so at most one tile is promoted.
+     */
+    const featuredGame = games.find((game) => game.featured) ?? null;
+    const orderedGames = featuredGame
+      ? [featuredGame, ...games.filter((game) => game.id !== featuredGame.id)]
+      : games;
+
     return (
       <section className="view" aria-labelledby="library-title">
         <header className="view-header">
@@ -1366,14 +1425,20 @@ export default function App() {
           </div>
         ) : (
           <ul className="tile-grid">
-            {games.map((game) => {
+            {orderedGames.map((game) => {
               const isSelected = game.id === selectedId;
               const isDirty = dirtyGames.has(game.id);
+              const isFeatured = game.featured;
               return (
-                <li key={game.id} className="tile-cell">
+                <li
+                  key={game.id}
+                  className={
+                    isFeatured ? "tile-cell tile-cell--featured" : "tile-cell"
+                  }
+                >
                   <button
                     type="button"
-                    className="tile"
+                    className={isFeatured ? "tile tile--featured" : "tile"}
                     aria-current={isSelected ? "true" : undefined}
                     onClick={() => setSelectedId(game.id)}
                     onContextMenu={(event) => openMenu(event, game.id)}
@@ -1383,7 +1448,12 @@ export default function App() {
                       <CoverArt
                         title={game.title}
                         adapter={game.adapter_type}
-                        coverUrl={coverUrls[game.id]}
+                        coverUrl={
+                          isFeatured
+                            ? wideCoverUrls[game.id]
+                            : coverUrls[game.id]
+                        }
+                        wide={isFeatured}
                       />
                     </span>
                     <span className="tile-label">
@@ -1468,6 +1538,19 @@ export default function App() {
             </p>
           </div>
           <div className="detail-actions">
+            <button
+              className="ghost"
+              type="button"
+              disabled={!!busy}
+              title={
+                game.featured
+                  ? "Remove the wide banner from the library"
+                  : "Pin this game as the library's wide banner"
+              }
+              onClick={() => void setFeaturedGame(game.id, !game.featured)}
+            >
+              {game.featured ? "Remove from featured" : "Feature on library"}
+            </button>
             <button
               className="ghost"
               onClick={() => void syncSelected()}
@@ -2274,6 +2357,27 @@ export default function App() {
                 }}
               >
                 Choose cover art…
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                className="menu-item"
+                disabled={!!busy}
+                title={
+                  game?.featured
+                    ? "Remove the wide banner from the library"
+                    : "Pin this game as the library's wide banner"
+                }
+                onClick={(event) => {
+                  event.stopPropagation();
+                  closeMenu();
+                  if (menuGameId) {
+                    void setFeaturedGame(menuGameId, !game?.featured);
+                  }
+                }}
+              >
+                {game?.featured ? "Remove from featured" : "Feature on library"}
               </button>
               <hr className="menu-separator" />
               <button

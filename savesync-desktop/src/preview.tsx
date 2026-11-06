@@ -17,6 +17,9 @@
  * `&state=connected|pending|error` seeds that provider's state, so the
  * connected/pending/error presentations can be inspected without a real remote.
  * `&error=…` overrides the seeded error text.
+ *
+ * `?featured=1` pins the first fixture as the library's wide banner and seeds
+ * its wide cover cache, so the featured tile can be captured in both themes.
  */
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -27,9 +30,11 @@ import {
   installTauriStub,
   seedActiveProvider,
   seedDirtyGames,
+  seedFeatured,
   seedGames,
   seedGoogleStatus,
   seedProviderStatus,
+  seedWideCover,
 } from "./test/tauri-stub";
 import type { ProviderKind } from "./types";
 
@@ -109,6 +114,18 @@ installTauriStub();
 seedGames([...fixtures.games]);
 // More than one dirty id so the dock dot and the tile badges are both visible.
 seedDirtyGames([fixtures.secondGameId, fixtures.thirdGameId]);
+
+/**
+ * Pin the first fixture as the banner and seed its wide cache. `featured` is a
+ * manual flag in the real app, so this mirrors what a user's context-menu pin
+ * writes; the wide URL resolves from the seeded cache the same way the shell
+ * serves it.
+ */
+if (params.get("featured") === "1") {
+  seedFeatured(fixtures.primaryGameId);
+  seedWideCover(fixtures.primaryGameId);
+}
+
 seedCloudState();
 
 const container = document.getElementById("root");
