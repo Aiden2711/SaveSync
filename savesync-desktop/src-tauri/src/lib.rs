@@ -13,9 +13,9 @@ use std::time::Duration;
 
 use savesync_core::{
     AdapterType, Conflict, CoverSearch, DROPBOX_ACCOUNT, DiscoveredGame, DropboxProvider,
-    GRID_UNAVAILABLE_MESSAGE, Game, GoogleDriveProvider, HttpTransport, KeyringTokenStore,
-    MemoryTokenStore, OAuthConfig, OAuthFlow, ReqwestTransport, RestoreReport, Revision,
-    SaveSyncEngine, SaveWatcher, SnapshotInfo, SteamGridDbClient, SyncReport, TokenStore,
+    GRID_UNAVAILABLE_MESSAGE, Game, GoogleDriveProvider, GridKind, HttpTransport,
+    KeyringTokenStore, MemoryTokenStore, OAuthConfig, OAuthFlow, ReqwestTransport, RestoreReport,
+    Revision, SaveSyncEngine, SaveWatcher, SnapshotInfo, SteamGridDbClient, SyncReport, TokenStore,
     WEBDAV_ACCOUNT, WebDavProvider,
 };
 use serde::{Deserialize, Serialize};
@@ -305,6 +305,22 @@ fn set_cover(
     engine
         .set_cover_path(&game_id, cover_path.as_deref())
         .map_err(stringify)
+}
+
+/// Make a game the library's single featured banner.
+///
+/// The previous banner is cleared in the same transaction, so this can never
+/// leave two featured games behind.
+#[tauri::command(rename_all = "snake_case")]
+fn set_featured(state: tauri::State<'_, AppState>, game_id: String) -> Result<Game, String> {
+    let mut engine = state.inner.engine.lock().map_err(lock_error)?;
+    engine.set_featured(&game_id).map_err(stringify)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+fn clear_featured(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let mut engine = state.inner.engine.lock().map_err(lock_error)?;
+    engine.clear_featured().map_err(stringify)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -1155,9 +1171,11 @@ async fn fetch_cover_art(
 async fn search_cover_candidates(
     state: tauri::State<'_, AppState>,
     game_id: String,
+    kind: Option<String>,
 ) -> Result<Option<CoverSearch>, String> {
+    let kind = cover_kind(kind.as_deref());
     let inner = state.inner.clone();
-    tauri::async_runtime::spawn_blocking(move || inner.search_cover_candidates(&game_id))
+    tauri::async_runtime::spawn_blocking(move || inner.search_cover_candidates(&game_id, kind))
         .await
         .map_err(|error| format!("artwork task failed: {error}"))?
 }
@@ -1171,9 +1189,11 @@ async fn set_cover_grid(
     state: tauri::State<'_, AppState>,
     game_id: String,
     grid_id: u64,
+    kind: Option<String>,
 ) -> Result<Game, String> {
+    let kind = cover_kind(kind.as_deref());
     let inner = state.inner.clone();
-    tauri::async_runtime::spawn_blocking(move || inner.set_cover_grid(&game_id, grid_id))
+    tauri::async_runtime::spawn_blocking(move || inner.set_cover_grid(&game_id, grid_id, kind))
         .await
         .map_err(|error| format!("artwork task failed: {error}"))?
 }
@@ -1194,13 +1214,18 @@ async fn clear_cover_art(
 /// The URL is built from the game id alone. No filesystem path is ever sent to
 /// the webview, and cache-busting is left to the caller.
 #[tauri::command(rename_all = "snake_case")]
-fn cover_url(state: tauri::State<'_, AppState>, game_id: String) -> Result<Option<String>, String> {
+fn cover_url(
+    state: tauri::State<'_, AppState>,
+    game_id: String,
+    kind: Option<String>,
+) -> Result<Option<String>, String> {
+    let kind = cover_kind(kind.as_deref());
     let engine = state.inner.engine.lock().map_err(lock_error)?;
     let cached = engine
-        .cover_file(&game_id)
+        .cover_file_kind(&game_id, kind)
         // Deliberately generic: the underlying error can name a cache path.
         .map_err(|_| "Could not resolve the cover art for this game.".to_string())?;
-    Ok(cached.map(|_| cover_scheme_url(&game_id)))
+    Ok(cached.map(|_| cover_scheme_url(&game_id, kind)))
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -1357,7 +1382,11 @@ impl Inner {
     /// requests below are network I/O with a timeout and a bounded retry
     /// policy, so they deliberately run with the lock released: making the
     /// picker wait on SteamGridDB must never stall every other engine command.
-    fn search_cover_candidates(&self, game_id: &str) -> Result<Option<CoverSearch>, String> {
+    fn search_cover_candidates(
+        &self,
+        game_id: &str,
+        kind: GridKind,
+    ) -> Result<Option<CoverSearch>, String> {
         self.with_cover_client(|client, api_key| {
             // Scoped so the guard is dropped at the end of this block, before
             // any request is made.
@@ -1373,17 +1402,17 @@ impl Inner {
                 return Ok(None);
             };
 
-            savesync_core::engine::cover_candidates_for_title(client, api_key, &title)
+            savesync_core::engine::cover_candidates_for_title_kind(client, api_key, &title, kind)
                 .map_err(|error| cover_fetch_error(&error))
         })
     }
 
     /// Download and record one explicitly chosen cover candidate.
-    fn set_cover_grid(&self, game_id: &str, grid_id: u64) -> Result<Game, String> {
+    fn set_cover_grid(&self, game_id: &str, grid_id: u64, kind: GridKind) -> Result<Game, String> {
         self.with_cover_client(|client, api_key| {
             let mut engine = self.engine.lock().map_err(lock_error)?;
             engine
-                .set_cover_grid(client, api_key, game_id, grid_id)
+                .set_cover_grid_kind(client, api_key, game_id, grid_id, kind)
                 .map_err(|error| cover_fetch_error(&error))
         })
     }
@@ -1462,15 +1491,31 @@ fn stringify(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
-/// Platform-correct URL for a game's cached cover.
+/// Parse an IPC-supplied kind, defaulting to portrait.
+///
+/// Portrait is the default because it is the only variant every older client
+/// sent, so an omitted field keeps its exact previous behavior.
+fn cover_kind(raw: Option<&str>) -> GridKind {
+    raw.map(GridKind::parse).unwrap_or_default()
+}
+
+/// Platform-correct URL for a game's cached cover of `kind`.
 ///
 /// Tauri serves app-defined schemes as `http://<scheme>.localhost/<path>` on
 /// Windows and Android, and as `<scheme>://localhost/<path>` everywhere else.
-fn cover_scheme_url(game_id: &str) -> String {
-    if cfg!(windows) || cfg!(target_os = "android") {
+///
+/// The portrait URL is byte-identical to the one earlier builds used; wide adds
+/// a `kind=wide` query pair, which the scheme handler reads and which never
+/// becomes part of the game id.
+fn cover_scheme_url(game_id: &str, kind: GridKind) -> String {
+    let base = if cfg!(windows) || cfg!(target_os = "android") {
         format!("http://{COVER_SCHEME}.localhost/{game_id}")
     } else {
         format!("{COVER_SCHEME}://localhost/{game_id}")
+    };
+    match kind {
+        GridKind::Portrait => base,
+        GridKind::Wide => format!("{base}?kind={}", GridKind::Wide.as_str()),
     }
 }
 
@@ -1496,6 +1541,23 @@ fn cover_request_id(path: &str) -> Option<&str> {
         return None;
     }
     is_valid_cover_id(game_id).then_some(game_id)
+}
+
+/// Interpret one cover-scheme request: the game id plus the requested variant.
+///
+/// Only `kind` is meaningful. Any other query pair — notably the UI's `?v=`
+/// cache buster — is ignored rather than folded into the id, and an unknown
+/// `kind` value falls back to portrait.
+fn cover_request_target<'a>(path: &'a str, query: Option<&str>) -> Option<(&'a str, GridKind)> {
+    let game_id = cover_request_id(path)?;
+    let kind = query
+        .unwrap_or_default()
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(name, _)| *name == "kind")
+        .map(|(_, value)| GridKind::parse(value))
+        .unwrap_or_default();
+    Some((game_id, kind))
 }
 
 /// Map a cached cover's file extension to the only MIME types the cache holds.
@@ -1553,20 +1615,24 @@ fn read_cover_bounded(path: &std::path::Path) -> Option<(Vec<u8>, &'static str)>
 ///
 /// The engine lock is held only for this lookup; the caller reads the file
 /// after the guard is released, so a slow disk cannot block other commands.
-fn resolve_cover(app: &tauri::AppHandle, game_id: &str) -> Option<PathBuf> {
+fn resolve_cover(app: &tauri::AppHandle, game_id: &str, kind: GridKind) -> Option<PathBuf> {
     let state = app.state::<AppState>();
     let engine = state.inner.engine.lock().ok()?;
-    engine.cover_file(game_id).ok().flatten()
+    engine.cover_file_kind(game_id, kind).ok().flatten()
 }
 
 /// Build the response for one cover request. Every rejection path returns the
 /// same empty `404`, so the caller cannot distinguish "no such id" from "no
 /// cached file".
-fn cover_response(app: &tauri::AppHandle, request_path: &str) -> Response<Vec<u8>> {
-    let Some(game_id) = cover_request_id(request_path) else {
+fn cover_response(
+    app: &tauri::AppHandle,
+    request_path: &str,
+    query: Option<&str>,
+) -> Response<Vec<u8>> {
+    let Some((game_id, kind)) = cover_request_target(request_path, query) else {
         return cover_not_found();
     };
-    let Some(cached) = resolve_cover(app, game_id) else {
+    let Some(cached) = resolve_cover(app, game_id, kind) else {
         return cover_not_found();
     };
     let Some((bytes, mime)) = read_cover_bounded(&cached) else {
@@ -1588,15 +1654,18 @@ pub fn run() {
         // game id; the handler resolves the file itself, and `asset:` stays
         // disabled.
         .register_asynchronous_uri_scheme_protocol(COVER_SCHEME, |ctx, request, responder| {
-            // Only the path is inspected, so a `?v=...` cache-busting query
-            // from the UI is ignored rather than becoming part of the id.
-            let path = request.uri().path().to_string();
+            // Only the path and the `kind` pair are inspected, so a `?v=...`
+            // cache-busting query from the UI is ignored rather than becoming
+            // part of the id.
+            let uri = request.uri().clone();
+            let path = uri.path().to_string();
+            let query = uri.query().map(ToString::to_string);
             let app = ctx.app_handle().clone();
             // Bounded, but still disk I/O: keep it off the protocol thread.
             // Every branch of `cover_response` produces a response, so the
             // responder is resolved exactly once.
             tauri::async_runtime::spawn_blocking(move || {
-                responder.respond(cover_response(&app, &path));
+                responder.respond(cover_response(&app, &path, query.as_deref()));
             });
         })
         .setup(|app| {
@@ -1716,6 +1785,8 @@ pub fn run() {
             enroll_discovered,
             unlink_game,
             set_cover,
+            set_featured,
+            clear_featured,
             add_location,
             snapshot_game,
             history,
@@ -1933,18 +2004,76 @@ mod tests {
 
     #[test]
     fn cover_scheme_url_is_built_from_the_game_id_only() {
-        let url = cover_scheme_url(COVER_TEST_ID);
+        let url = cover_scheme_url(COVER_TEST_ID, GridKind::Portrait);
 
         assert!(url.contains(COVER_TEST_ID));
         assert!(url.contains(COVER_SCHEME));
         assert!(url.contains("localhost"));
-        // The platform form must match Tauri's serving behaviour exactly.
+        // The platform form must match Tauri's serving behaviour exactly, and
+        // the portrait URL must stay byte-identical to the legacy bare form.
         let expected = if cfg!(windows) || cfg!(target_os = "android") {
             format!("http://savesync-cover.localhost/{COVER_TEST_ID}")
         } else {
             format!("savesync-cover://localhost/{COVER_TEST_ID}")
         };
         assert_eq!(url, expected);
+        assert!(!url.contains('?'), "portrait must carry no query string");
+    }
+
+    #[test]
+    fn cover_scheme_url_marks_wide_with_a_kind_query() {
+        let portrait = cover_scheme_url(COVER_TEST_ID, GridKind::Portrait);
+        let wide = cover_scheme_url(COVER_TEST_ID, GridKind::Wide);
+
+        // Wide is exactly portrait plus one query pair, so the id segment the
+        // scheme handler parses is unchanged.
+        assert_eq!(wide, format!("{portrait}?kind=wide"));
+        assert!(wide.ends_with("?kind=wide"));
+        assert_eq!(wide.matches('?').count(), 1);
+    }
+
+    #[test]
+    fn cover_request_target_defaults_to_portrait() {
+        // A legacy bare request, and one carrying only the UI's cache buster,
+        // both resolve to portrait.
+        assert_eq!(
+            cover_request_target(&format!("/{COVER_TEST_ID}"), None),
+            Some((COVER_TEST_ID, GridKind::Portrait))
+        );
+        assert_eq!(
+            cover_request_target(&format!("/{COVER_TEST_ID}"), Some("v=3")),
+            Some((COVER_TEST_ID, GridKind::Portrait))
+        );
+        assert_eq!(
+            cover_request_target(&format!("/{COVER_TEST_ID}"), Some("")),
+            Some((COVER_TEST_ID, GridKind::Portrait))
+        );
+        // An unknown kind is not a new variant.
+        assert_eq!(
+            cover_request_target(&format!("/{COVER_TEST_ID}"), Some("kind=square")),
+            Some((COVER_TEST_ID, GridKind::Portrait))
+        );
+    }
+
+    #[test]
+    fn cover_request_target_reads_the_kind_query() {
+        assert_eq!(
+            cover_request_target(&format!("/{COVER_TEST_ID}"), Some("kind=wide")),
+            Some((COVER_TEST_ID, GridKind::Wide))
+        );
+        // Order and extra pairs do not matter, and the cache buster is ignored.
+        assert_eq!(
+            cover_request_target(&format!("/{COVER_TEST_ID}"), Some("v=9&kind=wide")),
+            Some((COVER_TEST_ID, GridKind::Wide))
+        );
+        // The portrait value is accepted explicitly as well.
+        assert_eq!(
+            cover_request_target(&format!("/{COVER_TEST_ID}"), Some("kind=portrait")),
+            Some((COVER_TEST_ID, GridKind::Portrait))
+        );
+        // Validation of the path still happens before any query is considered.
+        assert_eq!(cover_request_target("/a/b", Some("kind=wide")), None);
+        assert_eq!(cover_request_target("/../evil", Some("kind=wide")), None);
     }
 
     #[test]

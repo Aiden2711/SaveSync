@@ -8,6 +8,7 @@ import { isDesktop } from "./tauri";
 import type {
   AppStatus,
   Conflict,
+  CoverKind,
   DirtyEvent,
   Game,
   GoogleStatus,
@@ -106,6 +107,11 @@ function providerErrorText(kind: ProviderKind, message: string): string {
 type CoverPickerState = {
   gameId: string;
   title: string;
+  /**
+   * Which cover shape the grid is showing. Portrait is the default, so the
+   * dialog opens exactly as it did before wide art existed.
+   */
+  kind: CoverKind;
   status: "loading" | "ready" | "error";
   candidates: GridCandidate[];
   /** Friendly text only; never a raw backend message. */
@@ -155,10 +161,13 @@ const DIALOG_FOCUSABLE =
 function Modal({
   titleId,
   onClose,
+  wide = false,
   children,
 }: {
   titleId: string;
   onClose: () => void;
+  /** Ask for the wider geometry; every other dialog keeps its narrow card. */
+  wide?: boolean;
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -183,7 +192,7 @@ function Modal({
   return (
     <dialog
       ref={ref}
-      className="modal"
+      className={wide ? "modal modal-wide" : "modal"}
       aria-labelledby={titleId}
       onCancel={(event) => {
         event.preventDefault();
@@ -238,21 +247,23 @@ function NavGlyph({ view }: { view: View }) {
       )}
       {view === "conflicts" && (
         <>
-          <path
-            fill="currentColor"
-            d="M7.6 3h8.8v5.6a4.4 4.4 0 0 1-8.8 0Z"
-          />
-          <path
-            fill="currentColor"
-            d="M5.6 4.4h2.4v1.7H5.6a1.55 1.55 0 0 0 0 3.1h1.2v1.7H5.6a3.25 3.25 0 0 1 0-6.5Z"
-          />
-          <path
-            fill="currentColor"
-            d="M18.4 4.4h-2.4v1.7h2.4a1.55 1.55 0 0 1 0 3.1h-1.2v1.7h1.2a3.25 3.25 0 0 0 0-6.5Z"
-          />
-          <path fill="currentColor" d="M10.3 11.9h3.4v3.1h-3.4z" />
-          <rect x="7.5" y="14.8" width="9" height="1.7" rx="0.85" fill="currentColor" />
-          <rect x="9.3" y="18" width="5.4" height="1.8" rx="0.9" fill="currentColor" />
+          {/* Two divergent revisions converging into one local head: a merge,
+              not a trophy. Stroked connectors at a 2.4 weight keep the ink as
+              solid as the filled glyphs beside it and stay crisp at the 18px
+              badge size, where hand-built filled diagonals turn to mush. */}
+          <g
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M6.5 6.0 12 11.6 17.5 6.0" />
+            <path d="M12 11.6v5.1" />
+          </g>
+          <circle cx="6.5" cy="4.5" r="2.5" fill="currentColor" />
+          <circle cx="17.5" cy="4.5" r="2.5" fill="currentColor" />
+          <circle cx="12" cy="19.3" r="2.8" fill="currentColor" />
         </>
       )}
       {view === "cloud" && (
@@ -792,54 +803,90 @@ export default function App() {
   );
 
   /**
-   * Open the cover picker and load SteamGridDB candidates for one game.
+   * Load (or reload) SteamGridDB candidates for one game and shape.
    *
-   * Exactly one search per open, and nothing is downloaded. The response is
-   * dropped if the dialog was closed (or retargeted) meanwhile, so a slow
-   * request can never resurrect a modal the user dismissed.
+   * Exactly one search per call and nothing is downloaded. The response is
+   * dropped unless it still matches both the dialog's game and its current
+   * shape, so a slow request can never resurrect a dismissed modal or overwrite
+   * the other variant's grid.
+   */
+  const loadCoverCandidates = useCallback(async (gameId: string, kind: CoverKind) => {
+    try {
+      const search = await api.searchCoverCandidates(gameId, kind);
+      setCoverPicker((current) =>
+        current && current.gameId === gameId && current.kind === kind
+          ? {
+              ...current,
+              status: "ready",
+              candidates: search?.candidates ?? [],
+              error: null,
+            }
+          : current,
+      );
+    } catch (cause) {
+      setCoverPicker((current) =>
+        current && current.gameId === gameId && current.kind === kind
+          ? {
+              ...current,
+              status: "error",
+              candidates: [],
+              error: coverPickerMessage(cause),
+            }
+          : current,
+      );
+    }
+  }, []);
+
+  /**
+   * Open the cover picker for one game.
+   *
+   * Portrait is the default so the menu entry behaves exactly as before; the
+   * dialog's Portrait | Wide toggle switches shape afterwards.
    */
   const openCoverPicker = useCallback(
-    async (gameId: string) => {
+    async (gameId: string, kind: CoverKind = "portrait") => {
       const game = games.find((candidate) => candidate.id === gameId);
       setCoverPicker({
         gameId,
         title: game?.title ?? "This game",
+        kind,
         status: "loading",
         candidates: [],
         error: null,
         pickingId: null,
         failedIds: [],
       });
-      try {
-        const search = await api.searchCoverCandidates(gameId);
-        setCoverPicker((current) =>
-          current && current.gameId === gameId
-            ? {
-                ...current,
-                status: "ready",
-                candidates: search?.candidates ?? [],
-                error: null,
-              }
-            : current,
-        );
-      } catch (cause) {
-        setCoverPicker((current) =>
-          current && current.gameId === gameId
-            ? {
-                ...current,
-                status: "error",
-                candidates: [],
-                error: coverPickerMessage(cause),
-              }
-            : current,
-        );
-      }
+      await loadCoverCandidates(gameId, kind);
     },
-    [games],
+    [games, loadCoverCandidates],
+  );
+
+  /**
+   * Switch the grid between portrait and wide art without closing the dialog.
+   *
+   * A pick in flight wins: the toggle is disabled meanwhile, and this guard
+   * keeps a programmatic call from discarding the candidate being downloaded.
+   */
+  const switchCoverKind = useCallback(
+    (kind: CoverKind) => {
+      const picker = coverPicker;
+      if (!picker || picker.kind === kind || picker.pickingId !== null) return;
+      setCoverPicker({
+        ...picker,
+        kind,
+        status: "loading",
+        candidates: [],
+        error: null,
+        pickingId: null,
+        failedIds: [],
+      });
+      void loadCoverCandidates(picker.gameId, kind);
+    },
+    [coverPicker, loadCoverCandidates],
   );
 
   const retryCoverSearch = useCallback(() => {
-    if (coverPicker) void openCoverPicker(coverPicker.gameId);
+    if (coverPicker) void openCoverPicker(coverPicker.gameId, coverPicker.kind);
   }, [coverPicker, openCoverPicker]);
 
   const closeCoverPicker = useCallback(() => {
@@ -867,15 +914,19 @@ export default function App() {
         current ? { ...current, pickingId: candidate.id, error: null } : current,
       );
       try {
-        const updated = await api.setCoverGrid(picker.gameId, candidate.id);
+        const updated = await api.setCoverGrid(picker.gameId, candidate.id, picker.kind);
         setGames((prev) =>
           prev.map((game) => (game.id === updated.id ? updated : game)),
         );
         let url: string | null = null;
-        try {
-          url = await api.coverUrl(updated.id);
-        } catch {
-          url = null;
+        // Only the portrait cache feeds the library tile's 2:3 art box, so a
+        // wide pick must not replace it with a banner-shaped image.
+        if (picker.kind === "portrait") {
+          try {
+            url = await api.coverUrl(updated.id);
+          } catch {
+            url = null;
+          }
         }
         if (url) {
           setCoverUrls((prev) => ({ ...prev, [updated.id]: `${url}?v=${Date.now()}` }));
@@ -2244,28 +2295,43 @@ export default function App() {
       ) : null}
 
       {coverPicker ? (
-        <Modal titleId="cover-picker-title" onClose={closeCoverPicker}>
-          <div className="dialog-card" onClick={(event) => event.stopPropagation()}>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "baseline",
-                justifyContent: "space-between",
-                gap: "16px",
-              }}
-            >
+        <Modal titleId="cover-picker-title" onClose={closeCoverPicker} wide>
+          <div className="dialog-card cover-picker-card" onClick={(event) => event.stopPropagation()}>
+            <div className="cover-picker-head">
               <h3 id="cover-picker-title" style={{ margin: 0 }}>
                 Choose cover art
               </h3>
-              {/* Rendered before the thumbnails so it is the dialog's first
-                  focusable control: the shared Modal focuses it on open. */}
+              {/* Rendered before every other control so it is the dialog's first
+                  focusable element: the shared Modal focuses it on open. */}
               <button type="button" className="ghost" onClick={closeCoverPicker} autoFocus>
                 Cancel
               </button>
             </div>
-            <p className="muted small" style={{ marginTop: "6px" }}>
-              {coverPicker.title}
-            </p>
+            <div className="cover-picker-subhead">
+              <p className="muted small" style={{ margin: 0 }}>
+                {coverPicker.title}
+              </p>
+              {/* Shape toggle. Portrait is the default, so opening the dialog
+                  still searches exactly what it always did. */}
+              <div className="seg" role="group" aria-label="Cover shape">
+                <button
+                  type="button"
+                  aria-pressed={coverPicker.kind === "portrait"}
+                  onClick={() => switchCoverKind("portrait")}
+                  disabled={coverPicker.pickingId !== null}
+                >
+                  Portrait
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={coverPicker.kind === "wide"}
+                  onClick={() => switchCoverKind("wide")}
+                  disabled={coverPicker.pickingId !== null}
+                >
+                  Wide
+                </button>
+              </div>
+            </div>
 
             {coverPicker.status === "loading" ? (
               <p role="status" style={{ marginTop: "16px" }}>
@@ -2298,16 +2364,14 @@ export default function App() {
               <div
                 ref={coverGridRef}
                 role="group"
-                aria-label="Cover art candidates"
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fill, minmax(96px, 1fr))",
-                  gap: "10px",
-                  maxHeight: "min(52vh, 420px)",
-                  overflowY: "auto",
-                  marginTop: "12px",
-                  paddingRight: "4px",
-                }}
+                aria-label={
+                  coverPicker.kind === "wide"
+                    ? "Wide cover art candidates"
+                    : "Cover art candidates"
+                }
+                className={
+                  coverPicker.kind === "wide" ? "cover-grid cover-grid-wide" : "cover-grid"
+                }
               >
                 {coverPicker.candidates.map((candidate, index) => {
                   const unavailable = coverPicker.failedIds.includes(candidate.id);
@@ -2334,15 +2398,11 @@ export default function App() {
                             }`
                       }
                       onClick={() => void chooseCoverGrid(candidate)}
+                      className={
+                        coverPicker.kind === "wide" ? "cover-tile cover-tile-wide" : "cover-tile"
+                      }
                       style={{
-                        position: "relative",
-                        padding: 0,
-                        border: "none",
-                        background: "transparent",
                         cursor: unavailable ? "not-allowed" : busy ? "progress" : "pointer",
-                        aspectRatio: "2 / 3",
-                        overflow: "hidden",
-                        borderRadius: "6px",
                         opacity: unavailable ? 0.4 : busy && !picking ? 0.55 : 1,
                       }}
                     >

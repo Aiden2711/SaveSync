@@ -1626,6 +1626,81 @@ dialog.modal .dialog-card {
 }
 
 /*
+ * The cover picker is a browsing surface, not a yes/no question: it gets room
+ * for a grid of thumbnails, capped at 880px so a large monitor does not stretch
+ * the art into a wall. Only this dialog opts in, through `modal-wide`; every
+ * other dialog keeps the 560px cap above.
+ */
+dialog.modal.modal-wide {
+  max-width: min(880px, calc(100vw - 2 * var(--space-lg)));
+}
+
+.cover-picker-card {
+  max-width: 880px;
+}
+
+.cover-picker-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.cover-picker-subhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  margin-top: 6px;
+}
+
+/*
+ * Auto-fill keeps the column count honest at every width: 5 columns inside the
+ * 880px dialog, 2 on a 390px phone. The internal scroll bounds the dialog
+ * height so a long candidate list never pushes Cancel off screen, and only the
+ * vertical axis scrolls, so there is no horizontal overflow to manage.
+ */
+.cover-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: var(--space-xs);
+  max-height: min(60vh, 540px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin-top: var(--space-xs);
+  padding-right: var(--space-3xs);
+}
+
+/* Wide art is 920x430, so each tile needs a banner's width to stay legible. */
+.cover-grid-wide {
+  grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
+}
+
+/*
+ * The tile is a plain button so the whole thumbnail is one hit target. Its
+ * shape follows the art it shows; the border radius is set here rather than
+ * inline because the aspect ratio is what the two variants actually change.
+ */
+.cover-tile {
+  position: relative;
+  padding: 0;
+  border: none;
+  background: transparent;
+  aspect-ratio: 2 / 3;
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+.cover-tile-wide {
+  aspect-ratio: 920 / 430;
+}
+
+.cover-tile:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+/*
  * Top-layer glass: a floating card over the scrim, so it takes the more opaque
  * `--glass-top` fill, a hairline frame, and the float shadow. Geometry stays
  * capped by `dialog.modal`'s `max-width` and by `max-width` here, so the card

@@ -504,3 +504,85 @@ fn refetch_in_another_format_prunes_the_old_extension() {
         second
     );
 }
+
+/// A wide fetch records `wide_cover_path` and leaves the portrait cover alone,
+/// so a game can hold both variants at once.
+#[test]
+fn wide_fetch_keeps_the_portrait_cover_and_writes_a_wide_file() {
+    let mut fixture = Fixture::new();
+    let portrait = png_payload(11);
+    let wide = png_payload(12);
+
+    let client = Fixture::client([cover_round(&portrait), cover_round(&wide)].concat());
+
+    fixture
+        .engine
+        .fetch_cover_art(&client, API_KEY, &fixture.game.id)
+        .unwrap();
+    let updated = fixture
+        .engine
+        .fetch_cover_variant(
+            &client,
+            API_KEY,
+            &fixture.game.id,
+            savesync_core::GridKind::Wide,
+        )
+        .unwrap();
+
+    let portrait_name = format!("{}.png", fixture.game.id);
+    let wide_name = format!("{}-wide.png", fixture.game.id);
+    assert_eq!(
+        updated.cover_path.as_deref(),
+        Some(format!("covers/{portrait_name}").as_str()),
+        "the portrait record must survive a wide fetch"
+    );
+    assert_eq!(
+        updated.wide_cover_path.as_deref(),
+        Some(format!("covers/{wide_name}").as_str())
+    );
+
+    assert_eq!(
+        fs::read(fixture.engine.covers_dir().join(&portrait_name)).unwrap(),
+        portrait
+    );
+    assert_eq!(
+        fs::read(fixture.engine.covers_dir().join(&wide_name)).unwrap(),
+        wide
+    );
+    assert_eq!(
+        fixture.cached_entries(),
+        vec![wide_name.clone(), portrait_name],
+        "one file per variant, no staging leftovers"
+    );
+
+    let resolved = fixture
+        .engine
+        .cover_file_kind(&fixture.game.id, savesync_core::GridKind::Wide)
+        .unwrap()
+        .expect("the wide cover resolves");
+    assert_eq!(resolved, fixture.engine.covers_dir().join(wide_name));
+}
+
+/// At most one game is featured at a time: promoting a second one clears the
+/// first in the same transaction instead of tripping the unique index.
+#[test]
+fn set_featured_moves_the_single_banner() {
+    let mut fixture = Fixture::new();
+    let second = fixture
+        .engine
+        .enroll_game("Hades II", AdapterType::CustomDirectory)
+        .unwrap();
+
+    let first = fixture.engine.set_featured(&fixture.game.id).unwrap();
+    assert!(first.featured);
+
+    let promoted = fixture.engine.set_featured(&second.id).unwrap();
+    assert!(promoted.featured, "the new banner is featured");
+
+    let previous = fixture.engine.get_game(&fixture.game.id).unwrap();
+    assert!(!previous.featured, "the previous banner must be cleared");
+
+    fixture.engine.clear_featured().unwrap();
+    let cleared = fixture.engine.get_game(&second.id).unwrap();
+    assert!(!cleared.featured, "clear_featured must clear the banner");
+}

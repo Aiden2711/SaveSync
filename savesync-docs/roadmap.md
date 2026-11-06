@@ -96,6 +96,7 @@ Not scheduled phases. Each item is opt-in, additive, and must not weaken local b
   - Right-click a cover to search and pick a different image.
   - Generated SVG covers remain the offline fallback.
   - Must never block local backup or restore, and the key must never be logged or written to diagnostics.
+- [ ] **RetroAchievements integration**: public Web API; show per-game achievement progress from existing save revisions; the trophy glyph is reserved for it in the nav icon set (Conflicts now uses a merge glyph), and the API key stays in the OS keyring and out of logs/diagnostics.
 - [ ] **Controller-aware prompts**:
   - When a gamepad is connected, show the matching button glyphs (A/B/Y) in dialogs and menus, while keeping full keyboard and mouse parity.
   - Detection only; no gameplay input handling.

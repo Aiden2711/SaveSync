@@ -48,7 +48,7 @@ pub use adapters::{
     LocationCandidate, PlatformAdapter, RestoreContext, RestoreResult, adapter_for,
     discovery_sources,
 };
-pub use artwork::{GridCandidate, MAX_GRID_BYTES, SteamGridDbClient};
+pub use artwork::{GridCandidate, GridKind, MAX_GRID_BYTES, SteamGridDbClient};
 pub use credentials::{
     DROPBOX_ACCOUNT, GOOGLE_ACCOUNT, KeyringTokenStore, MemoryTokenStore, SERVICE, TokenStore,
     WEBDAV_ACCOUNT,

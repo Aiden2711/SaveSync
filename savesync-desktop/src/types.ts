@@ -6,6 +6,12 @@ export type AdapterType =
   | "emulator"
   | "jksv";
 
+/**
+ * Which cached cover variant to ask for. Portrait is the default everywhere so
+ * an omitted kind keeps every legacy code path byte-identical.
+ */
+export type CoverKind = "portrait" | "wide";
+
 export interface Game {
   id: string;
   title: string;
@@ -15,6 +21,10 @@ export interface Game {
   updated_at: string;
   active_head_revision_id: string | null;
   cover_path: string | null;
+  /** Cached 920x430 banner cover, if one was chosen. */
+  wide_cover_path: string | null;
+  /** Whether this game is the library's single featured (banner) game. */
+  featured: boolean;
 }
 
 export interface Revision {

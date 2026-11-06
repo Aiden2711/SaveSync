@@ -3,6 +3,7 @@ import type {
   AppStatus,
   ArtworkStatus,
   Conflict,
+  CoverKind,
   CoverSearch,
   DirtyEvent,
   DiscoveredGame,
@@ -89,16 +90,32 @@ export const api = {
 
   fetchCoverArt: (game_id: string) => invoke<Game>("fetch_cover_art", { game_id }),
 
-  /** Ranked cover candidates, or `null` when SteamGridDB has no match at all. */
-  searchCoverCandidates: (game_id: string) =>
-    invoke<CoverSearch | null>("search_cover_candidates", { game_id }),
+  /**
+   * Ranked cover candidates, or `null` when SteamGridDB has no match at all.
+   *
+   * `kind` is omitted from the IPC payload for portrait so an existing call
+   * site sends exactly the args it always did.
+   */
+  searchCoverCandidates: (game_id: string, kind: CoverKind = "portrait") =>
+    kind === "portrait"
+      ? invoke<CoverSearch | null>("search_cover_candidates", { game_id })
+      : invoke<CoverSearch | null>("search_cover_candidates", { game_id, kind }),
 
-  setCoverGrid: (game_id: string, grid_id: number) =>
-    invoke<Game>("set_cover_grid", { game_id, grid_id }),
+  setCoverGrid: (game_id: string, grid_id: number, kind: CoverKind = "portrait") =>
+    kind === "portrait"
+      ? invoke<Game>("set_cover_grid", { game_id, grid_id })
+      : invoke<Game>("set_cover_grid", { game_id, grid_id, kind }),
 
   clearCoverArt: (game_id: string) => invoke<Game>("clear_cover_art", { game_id }),
 
-  coverUrl: (game_id: string) => invoke<string | null>("cover_url", { game_id }),
+  coverUrl: (game_id: string, kind: CoverKind = "portrait") =>
+    kind === "portrait"
+      ? invoke<string | null>("cover_url", { game_id })
+      : invoke<string | null>("cover_url", { game_id, kind }),
+
+  setFeatured: (game_id: string) => invoke<Game>("set_featured", { game_id }),
+
+  clearFeatured: () => invoke<null>("clear_featured"),
 
   sync: (game_id: string) => invoke<SyncReport>("sync_game", { game_id }),
 

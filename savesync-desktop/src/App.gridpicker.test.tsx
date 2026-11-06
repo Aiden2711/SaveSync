@@ -303,4 +303,85 @@ describe("cover art picker", () => {
     );
     expect(alert.textContent).not.toContain("keyring");
   });
+
+  it("exposes the Portrait | Wide toggle state and defaults to Portrait", async () => {
+    seedArtworkStatus(true);
+    const user = userEvent.setup();
+    const dialog = await openPicker(user);
+
+    const shape = within(dialog).getByRole("group", { name: "Cover shape" });
+    expect(within(shape).getByRole("button", { name: "Portrait" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(within(shape).getByRole("button", { name: "Wide" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+
+    // Opening still searches portrait art with the legacy argument shape.
+    expect(callsFor("search_cover_candidates")).toHaveLength(1);
+    expect(callsFor("search_cover_candidates")[0].args).toEqual({
+      game_id: fixtures.primaryGameId,
+    });
+  });
+
+  it("switches to Wide, searches wide candidates, and stays put during a pick", async () => {
+    seedArtworkStatus(true);
+    const user = userEvent.setup();
+    const dialog = await openPicker(user);
+
+    await user.click(within(dialog).getByRole("button", { name: "Wide" }));
+
+    await within(dialog).findByRole("group", { name: "Wide cover art candidates" });
+    expect(within(dialog).getByRole("button", { name: "Wide" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(within(dialog).getByRole("button", { name: "Portrait" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(callsFor("search_cover_candidates")).toHaveLength(2);
+    expect(callsFor("search_cover_candidates")[1].args).toEqual({
+      game_id: fixtures.primaryGameId,
+      kind: "wide",
+    });
+
+    // A pick in flight owns the dialog: the toggle is inert, so it can never
+    // discard the candidate being downloaded or start a competing search.
+    fireEvent.click(within(dialog).getAllByRole("button", { name: /Use cover/ })[0]);
+    const portraitToggle = within(dialog).getByRole("button", { name: "Portrait" });
+    expect(portraitToggle).toBeDisabled();
+    fireEvent.click(portraitToggle);
+    expect(callsFor("search_cover_candidates")).toHaveLength(2);
+
+    // Let the pick settle so nothing outlives the test.
+    await waitFor(() => expect(document.querySelector("dialog")).toBeNull());
+  });
+
+  it("picks the wide grid without overwriting the tile's portrait art", async () => {
+    seedArtworkStatus(true);
+    const user = userEvent.setup();
+    const dialog = await openPicker(user);
+    await user.click(within(dialog).getByRole("button", { name: "Wide" }));
+    const chosen = fixtures.coverCandidates[0];
+
+    await user.click(await within(dialog).findByRole("button", { name: /Use cover 1/ }));
+
+    await waitFor(() => expect(callsFor("set_cover_grid")).toHaveLength(1));
+    expect(callsFor("set_cover_grid")[0].args).toEqual({
+      game_id: fixtures.primaryGameId,
+      grid_id: chosen.id,
+      kind: "wide",
+    });
+    await waitFor(() => expect(document.querySelector("dialog")).toBeNull());
+
+    // The wide cache is separate, so the 2:3 tile box keeps its monogram and
+    // no portrait URL is ever requested.
+    expect(callsFor("cover_url")).toHaveLength(0);
+    const box = screen.getByRole("button", { name: /Hades/ }).querySelector(".cover-art");
+    expect(box?.querySelector("img") ?? null).toBeNull();
+    expect(box?.querySelector("svg") ?? null).not.toBeNull();
+  });
 });

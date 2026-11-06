@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::adapters::{self, RestoreContext};
-use crate::artwork::{GridCandidate, SteamGridDbClient};
+use crate::artwork::{GridCandidate, GridKind, SteamGridDbClient};
 use crate::blob::BlobStore;
 use crate::db::Db;
 use crate::error::{Error, Result};
@@ -180,6 +180,33 @@ impl SaveSyncEngine {
         })
     }
 
+    /// Set or clear the wide (banner) cover path for a game.
+    ///
+    /// Mirrors [`Self::set_cover_path`] for the 920x430 variant; the portrait
+    /// cover is untouched.
+    pub fn set_wide_cover(&mut self, game_id: &str, wide_cover_path: Option<&str>) -> Result<Game> {
+        self.db.transaction(|tx| {
+            store::set_wide_cover_path(tx, game_id, wide_cover_path)?;
+            store::require_game(tx, game_id)
+        })
+    }
+
+    /// Make `game_id` the single featured game (the library banner).
+    ///
+    /// The previous banner is cleared in the same transaction, so the
+    /// single-featured index is never tripped.
+    pub fn set_featured(&mut self, game_id: &str) -> Result<Game> {
+        self.db.transaction(|tx| {
+            store::set_featured(tx, game_id)?;
+            store::require_game(tx, game_id)
+        })
+    }
+
+    /// Clear the featured banner, if any.
+    pub fn clear_featured(&mut self) -> Result<()> {
+        self.db.transaction(|tx| store::clear_featured(tx))
+    }
+
     /// Directory where cached cover images live.
     pub fn covers_dir(&self) -> PathBuf {
         self.paths.covers()
@@ -190,8 +217,26 @@ impl SaveSyncEngine {
     /// Returns `Ok(None)` when the game has no cover recorded. Fails if the
     /// recorded path is unsafe or does not point at a regular file.
     pub fn cover_file(&self, game_id: &str) -> Result<Option<PathBuf>> {
+        self.cover_file_kind(game_id, GridKind::Portrait)
+    }
+
+    /// Resolve a game's cached cover of `kind` to an absolute path on disk.
+    ///
+    /// Portrait resolves `cover_path` and is byte-identical to
+    /// [`Self::cover_file`]; wide resolves `wide_cover_path`. Both share the
+    /// same containment and regular-file checks, because the recorded value is
+    /// untrusted either way.
+    pub fn cover_file_kind(&self, game_id: &str, kind: GridKind) -> Result<Option<PathBuf>> {
         let game = store::require_game(self.db.connection(), game_id)?;
-        let Some(recorded) = game.cover_path else {
+        let recorded = match kind {
+            GridKind::Portrait => game.cover_path,
+            GridKind::Wide => game.wide_cover_path,
+        };
+        self.resolve_cover_path(recorded.as_deref())
+    }
+
+    fn resolve_cover_path(&self, recorded: Option<&str>) -> Result<Option<PathBuf>> {
+        let Some(recorded) = recorded else {
             return Ok(None);
         };
 
@@ -203,7 +248,7 @@ impl SaveSyncEngine {
                 "cover path is outside the cover cache".into(),
             ));
         }
-        let resolved = crate::paths::safe_join(&self.paths.root, &recorded)?;
+        let resolved = crate::paths::safe_join(&self.paths.root, recorded)?;
         if !resolved.starts_with(self.paths.covers()) {
             return Err(Error::InvalidState(
                 "cover path is outside the cover cache".into(),
@@ -240,15 +285,29 @@ impl SaveSyncEngine {
         api_key: &str,
         game_id: &str,
     ) -> Result<Game> {
+        self.fetch_cover_variant(client, api_key, game_id, GridKind::Portrait)
+    }
+
+    /// Fetch, validate and cache a cover of `kind`, then record it.
+    ///
+    /// Portrait writes `cover_path`; wide writes `wide_cover_path` and leaves
+    /// the portrait cover untouched, so a game can hold both variants.
+    pub fn fetch_cover_variant(
+        &mut self,
+        client: &SteamGridDbClient,
+        api_key: &str,
+        game_id: &str,
+        kind: GridKind,
+    ) -> Result<Game> {
         let candidate = self
-            .search_cover_candidates(client, api_key, game_id)?
+            .search_cover_candidates_kind(client, api_key, game_id, kind)?
             .ok_or_else(|| Error::NotFound("no SteamGridDB match for this title".into()))?
             .candidates
             .into_iter()
             .next()
             .ok_or_else(|| Error::NotFound("no cover art available for this game".into()))?;
 
-        self.cache_cover(client, api_key, game_id, &candidate)
+        self.cache_cover(client, api_key, game_id, &candidate, kind)
     }
 
     /// Read the SteamGridDB search term for a game: its recorded title.
@@ -294,10 +353,24 @@ impl SaveSyncEngine {
         api_key: &str,
         game_id: &str,
     ) -> Result<Option<CoverSearch>> {
+        self.search_cover_candidates_kind(client, api_key, game_id, GridKind::Portrait)
+    }
+
+    /// List the cover candidates of `kind` SteamGridDB offers for a game.
+    ///
+    /// Identical request shape to [`Self::search_cover_candidates`], with the
+    /// kind selecting the grid family (portrait 600x900 or wide 920x430).
+    pub fn search_cover_candidates_kind(
+        &mut self,
+        client: &SteamGridDbClient,
+        api_key: &str,
+        game_id: &str,
+        kind: GridKind,
+    ) -> Result<Option<CoverSearch>> {
         let Some(title) = self.cover_search_term(game_id)? else {
             return Ok(None);
         };
-        cover_candidates_for_title(client, api_key, &title)
+        cover_candidates_for_title_kind(client, api_key, &title, kind)
     }
 
     /// Download and record one specific cover candidate chosen by the user.
@@ -317,6 +390,21 @@ impl SaveSyncEngine {
         game_id: &str,
         grid_id: u64,
     ) -> Result<Game> {
+        self.set_cover_grid_kind(client, api_key, game_id, grid_id, GridKind::Portrait)
+    }
+
+    /// Download and record one specific cover candidate of `kind`.
+    ///
+    /// Portrait records `cover_path`, wide records `wide_cover_path`; the other
+    /// variant is left alone.
+    pub fn set_cover_grid_kind(
+        &mut self,
+        client: &SteamGridDbClient,
+        api_key: &str,
+        game_id: &str,
+        grid_id: u64,
+        kind: GridKind,
+    ) -> Result<Game> {
         cover_stem(game_id)?;
 
         let game = store::require_game(self.db.connection(), game_id)?;
@@ -324,7 +412,7 @@ impl SaveSyncEngine {
         let sgdb_id = client
             .search_game(api_key, &game.title)?
             .ok_or_else(|| Error::NotFound("no SteamGridDB match for this title".into()))?;
-        let candidates = client.list_grids(api_key, sgdb_id)?;
+        let candidates = client.list_grids_kind(api_key, sgdb_id, kind)?;
 
         // Match by id, not by rank: an explicit choice overrides the automatic
         // one, even when the user picks a worse-ranked grid on purpose.
@@ -333,7 +421,7 @@ impl SaveSyncEngine {
             .find(|candidate| candidate.id == grid_id)
             .ok_or_else(|| Error::NotFound(GRID_UNAVAILABLE_MESSAGE.to_string()))?;
 
-        self.cache_cover(client, api_key, game_id, candidate)
+        self.cache_cover(client, api_key, game_id, candidate, kind)
     }
 
     /// Clear a game's cover: clear the recorded path, then best-effort delete
@@ -685,10 +773,11 @@ impl SaveSyncEngine {
         api_key: &str,
         game_id: &str,
         candidate: &GridCandidate,
+        kind: GridKind,
     ) -> Result<Game> {
         // Re-validate here too: this is the only place that turns a game id
         // into a path component, and it must stay safe regardless of caller.
-        let stem = cover_stem(game_id)?;
+        let stem = cover_cache_stem(game_id, kind)?;
 
         // The final name depends on the image's own signature, which is only
         // known after the download, so the completed file lands on a staging
@@ -709,14 +798,17 @@ impl SaveSyncEngine {
 
         let relative = format!("covers/{stem}.{extension}");
         let updated = self.db.transaction(|tx| {
-            store::set_cover_path(tx, game_id, Some(&relative))?;
+            match kind {
+                GridKind::Portrait => store::set_cover_path(tx, game_id, Some(&relative)),
+                GridKind::Wide => store::set_wide_cover_path(tx, game_id, Some(&relative)),
+            }?;
             store::require_game(tx, game_id)
         })?;
 
         // A switch may have produced a different format; drop the stale
-        // variant so the cache holds exactly one file per game. A failed
-        // deletion is harmless: an orphaned cache file is never read and is
-        // never inside a save location.
+        // variant so the cache holds exactly one file per game per kind. A
+        // failed deletion is harmless: an orphaned cache file is never read and
+        // is never inside a save location.
         for other in COVER_EXTENSIONS {
             if other != extension {
                 let _ = fs::remove_file(self.paths.covers().join(format!("{stem}.{other}")));
@@ -760,10 +852,24 @@ pub fn cover_candidates_for_title(
     api_key: &str,
     title: &str,
 ) -> Result<Option<CoverSearch>> {
+    cover_candidates_for_title_kind(client, api_key, title, GridKind::Portrait)
+}
+
+/// Resolve a title into the ranked candidates of `kind`.
+///
+/// Identical to [`cover_candidates_for_title`] except for the grid family: the
+/// title lookup is shared, and portrait is what the plain function has always
+/// asked for.
+pub fn cover_candidates_for_title_kind(
+    client: &SteamGridDbClient,
+    api_key: &str,
+    title: &str,
+    kind: GridKind,
+) -> Result<Option<CoverSearch>> {
     let Some(sgdb_game_id) = client.search_game(api_key, title)? else {
         return Ok(None);
     };
-    let candidates = client.list_grids(api_key, sgdb_game_id)?;
+    let candidates = client.list_grids_kind(api_key, sgdb_game_id, kind)?;
     Ok(Some(CoverSearch {
         sgdb_game_id,
         candidates,
@@ -785,6 +891,20 @@ fn cover_stem(game_id: &str) -> Result<&str> {
         ));
     }
     Ok(game_id)
+}
+
+/// Cache file stem for a cover of `kind` inside `covers/`.
+///
+/// Portrait is the plain validated game id, so every portrait cache file keeps
+/// the exact name it had before wide art existed. Wide shares the same validated
+/// base with a `-wide` suffix, so the two variants can never overwrite each
+/// other and a wide file can never be mistaken for a portrait one.
+fn cover_cache_stem(game_id: &str, kind: GridKind) -> Result<String> {
+    let stem = cover_stem(game_id)?;
+    Ok(match kind {
+        GridKind::Portrait => stem.to_string(),
+        GridKind::Wide => format!("{stem}-wide"),
+    })
 }
 
 fn load_or_create_device(db: &mut Db) -> Result<Device> {

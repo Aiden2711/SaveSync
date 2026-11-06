@@ -99,6 +99,16 @@ pub struct Game {
     pub active_head_revision_id: Option<String>,
     /// Optional path to a cover image file for the game.
     pub cover_path: Option<String>,
+    /// Optional path to a wide (banner) cover cached beside the portrait one.
+    ///
+    /// `None` for every game that has only ever had a portrait cover, which is
+    /// what rows written before schema v4 report.
+    pub wide_cover_path: Option<String>,
+    /// Whether this game's wide art is the library's featured banner.
+    ///
+    /// At most one game may be featured at a time; [`crate::store::set_featured`]
+    /// enforces that in one transaction.
+    pub featured: bool,
 }
 
 /// A filesystem location belonging to a game.

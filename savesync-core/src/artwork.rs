@@ -44,6 +44,64 @@ const PORTRAIT_DIMENSIONS: &str = "600x900";
 /// Aspect ratio preferred for a game tile (2:3).
 const TARGET_ASPECT_RATIO: f64 = 2.0 / 3.0;
 
+/// Wide grids are requested in the API's 920x430 banner dimension set.
+const WIDE_DIMENSIONS: &str = "920x430";
+
+/// Aspect ratio preferred for a wide banner (920:430).
+const WIDE_TARGET_ASPECT_RATIO: f64 = 920.0 / 430.0;
+
+/// Which SteamGridDB grid family a request targets.
+///
+/// Both families share one client, transport, retry policy, and download trust
+/// boundary; only the `dimensions` filter and the aspect ratio used for ranking
+/// differ. Portrait is the default so every legacy call path keeps its exact
+/// previous request and ordering.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum GridKind {
+    /// 600x900 game tiles (2:3).
+    #[default]
+    Portrait,
+    /// 920x430 header/banner art.
+    Wide,
+}
+
+impl GridKind {
+    /// SteamGridDB `dimensions` filter for this family.
+    pub const fn dimensions(self) -> &'static str {
+        match self {
+            Self::Portrait => PORTRAIT_DIMENSIONS,
+            Self::Wide => WIDE_DIMENSIONS,
+        }
+    }
+
+    /// Aspect ratio this family's candidates are ranked against.
+    pub const fn target_aspect_ratio(self) -> f64 {
+        match self {
+            Self::Portrait => TARGET_ASPECT_RATIO,
+            Self::Wide => WIDE_TARGET_ASPECT_RATIO,
+        }
+    }
+
+    /// Stable identifier used across the IPC boundary.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Portrait => "portrait",
+            Self::Wide => "wide",
+        }
+    }
+
+    /// Parse an IPC-supplied kind.
+    ///
+    /// Unknown or missing values fall back to [`GridKind::Portrait`] so a
+    /// client that predates wide art keeps its existing behavior.
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "wide" => Self::Wide,
+            _ => Self::Portrait,
+        }
+    }
+}
+
 /// Upper bound on the candidates returned by [`SteamGridDbClient::list_grids`].
 ///
 /// The picker loads one `<img>` per candidate directly from the CDN and the
@@ -152,7 +210,22 @@ impl SteamGridDbClient {
     /// Returns `Ok(None)` only when the response contains no usable entry, or
     /// the API reports a `404`.
     pub fn pick_grid(&self, api_key: &str, sgdb_game_id: u64) -> Result<Option<GridCandidate>> {
-        Ok(self.list_grids(api_key, sgdb_game_id)?.into_iter().next())
+        self.pick_grid_kind(api_key, sgdb_game_id, GridKind::Portrait)
+    }
+
+    /// Pick the best cover of `kind` for a SteamGridDB game id.
+    ///
+    /// Equivalent to the first entry of [`Self::list_grids_kind`].
+    pub fn pick_grid_kind(
+        &self,
+        api_key: &str,
+        sgdb_game_id: u64,
+        kind: GridKind,
+    ) -> Result<Option<GridCandidate>> {
+        Ok(self
+            .list_grids_kind(api_key, sgdb_game_id, kind)?
+            .into_iter()
+            .next())
     }
 
     /// List every usable portrait cover for a SteamGridDB game id, best first.
@@ -173,7 +246,20 @@ impl SteamGridDbClient {
     /// thumbnails straight from the CDN, so the payload is bounded rather than
     /// proportional to however many grids upstream publishes.
     pub fn list_grids(&self, api_key: &str, sgdb_game_id: u64) -> Result<Vec<GridCandidate>> {
-        let url = grids_url(sgdb_game_id)?;
+        self.list_grids_kind(api_key, sgdb_game_id, GridKind::Portrait)
+    }
+
+    /// List every usable cover of `kind` for a SteamGridDB game id, best first.
+    ///
+    /// Identical to [`Self::list_grids`] except for the `dimensions` filter and
+    /// the aspect ratio used to rank dimensioned entries.
+    pub fn list_grids_kind(
+        &self,
+        api_key: &str,
+        sgdb_game_id: u64,
+        kind: GridKind,
+    ) -> Result<Vec<GridCandidate>> {
+        let url = grids_url(sgdb_game_id, kind)?;
         let response = execute_with_retry(self.transport.as_ref(), &self.policy, || {
             authorized(HttpRequest::new(HttpMethod::Get, &url), api_key)
                 .header("Accept", "application/json")
@@ -189,7 +275,7 @@ impl SteamGridDbClient {
         if !parsed.success {
             return Err(unsuccessful_response());
         }
-        Ok(ranked_grids(&parsed.data))
+        Ok(ranked_grids(&parsed.data, kind))
     }
 
     /// Download a cover to `dest` atomically, returning the bytes written and
@@ -335,7 +421,7 @@ fn autocomplete_url(title: &str) -> Result<String> {
     Ok(url.to_string())
 }
 
-fn grids_url(sgdb_game_id: u64) -> Result<String> {
+fn grids_url(sgdb_game_id: u64, kind: GridKind) -> Result<String> {
     let mut url = api_base_url()?;
     {
         let mut segments = url
@@ -345,7 +431,7 @@ fn grids_url(sgdb_game_id: u64) -> Result<String> {
         segments.push("grids").push("game").push(&id);
     }
     url.query_pairs_mut()
-        .append_pair("dimensions", PORTRAIT_DIMENSIONS);
+        .append_pair("dimensions", kind.dimensions());
     Ok(url.to_string())
 }
 
@@ -372,7 +458,8 @@ fn check_status(response: &HttpResponse) -> Result<()> {
     Ok(())
 }
 
-/// Rank candidate grids best-first, preferring the aspect ratio closest to 2:3.
+/// Rank candidate grids best-first, preferring the aspect ratio closest to the
+/// family's target (`2:3` portrait, `920:430` wide).
 ///
 /// Any entry with a URL is a usable fallback: dimensions are advisory upstream
 /// metadata, so an entry that omits them is still downloadable. Entries whose
@@ -383,14 +470,14 @@ fn check_status(response: &HttpResponse) -> Result<()> {
 /// The comparator is deliberately *not* a total order: entries that tie on the
 /// ranking keys keep their upstream order, and `sort_by` is stable, so
 /// `ranked[0]` is exactly the entry the pre-picker `best_grid` selected.
-fn ranked_grids(entries: &[GridEntry]) -> Vec<GridCandidate> {
+fn ranked_grids(entries: &[GridEntry], kind: GridKind) -> Vec<GridCandidate> {
     let mut ranked: Vec<&GridEntry> = entries
         .iter()
         .filter(|entry| !entry.url.is_empty() && validate_grid_url(&entry.url).is_ok())
         .collect();
 
-    ranked.sort_by(
-        |left, right| match (aspect_distance(left), aspect_distance(right)) {
+    ranked.sort_by(|left, right| {
+        match (aspect_distance(left, kind), aspect_distance(right, kind)) {
             (Some(left_ratio), Some(right_ratio)) => left_ratio
                 .total_cmp(&right_ratio)
                 .then_with(|| area(right).cmp(&area(left))),
@@ -400,8 +487,8 @@ fn ranked_grids(entries: &[GridEntry]) -> Vec<GridCandidate> {
                 .score
                 .total_cmp(&left.score)
                 .then_with(|| right.id.cmp(&left.id)),
-        },
-    );
+        }
+    });
 
     ranked
         .into_iter()
@@ -416,13 +503,13 @@ fn ranked_grids(entries: &[GridEntry]) -> Vec<GridCandidate> {
         .collect()
 }
 
-/// Distance between an entry's aspect ratio and 2:3, or `None` when the entry
-/// reports no usable dimensions.
-fn aspect_distance(entry: &GridEntry) -> Option<f64> {
+/// Distance between an entry's aspect ratio and the family's target, or `None`
+/// when the entry reports no usable dimensions.
+fn aspect_distance(entry: &GridEntry, kind: GridKind) -> Option<f64> {
     if entry.width == 0 || entry.height == 0 {
         return None;
     }
-    Some((f64::from(entry.width) / f64::from(entry.height) - TARGET_ASPECT_RATIO).abs())
+    Some((f64::from(entry.width) / f64::from(entry.height) - kind.target_aspect_ratio()).abs())
 }
 
 fn area(entry: &GridEntry) -> u64 {
@@ -1014,6 +1101,134 @@ mod tests {
             .unwrap();
         let picked = client.pick_grid("key", 7).unwrap().unwrap();
         assert_eq!(picked, head);
+    }
+
+    /// The kind round-trips across the IPC boundary, and anything unrecognised
+    /// falls back to portrait so an older client keeps its exact behavior.
+    #[test]
+    fn grid_kind_parses_and_carries_its_dimensions() {
+        assert_eq!(GridKind::default(), GridKind::Portrait);
+        assert_eq!(GridKind::Portrait.as_str(), "portrait");
+        assert_eq!(GridKind::Wide.as_str(), "wide");
+
+        assert_eq!(GridKind::parse("portrait"), GridKind::Portrait);
+        assert_eq!(GridKind::parse("wide"), GridKind::Wide);
+        assert_eq!(GridKind::parse(" wide "), GridKind::Wide);
+        assert_eq!(GridKind::parse("WIDE"), GridKind::Wide);
+        assert_eq!(GridKind::parse(""), GridKind::Portrait);
+        assert_eq!(GridKind::parse("capsule"), GridKind::Portrait);
+
+        // Verified SteamGridDB dimension strings for each family.
+        assert_eq!(GridKind::Portrait.dimensions(), "600x900");
+        assert_eq!(GridKind::Wide.dimensions(), "920x430");
+        assert!((GridKind::Portrait.target_aspect_ratio() - 2.0 / 3.0).abs() < f64::EPSILON);
+        assert!((GridKind::Wide.target_aspect_ratio() - 920.0 / 430.0).abs() < f64::EPSILON);
+    }
+
+    /// Wide requests filter upstream by 920x430; portrait requests are unchanged.
+    #[test]
+    fn list_grids_kind_requests_the_family_dimensions() {
+        let payload = json!({"success": true, "data": []});
+        let (client, transport) = client(vec![
+            json_response(200, payload.clone()),
+            json_response(200, payload),
+        ]);
+
+        client.list_grids_kind("key", 7, GridKind::Wide).unwrap();
+        client.list_grids("key", 7).unwrap();
+
+        let urls = transport.urls();
+        assert!(
+            urls[0].contains("dimensions=920x430"),
+            "wide list must filter on 920x430: {}",
+            urls[0]
+        );
+        assert!(
+            urls[1].contains("dimensions=600x900"),
+            "portrait list must stay byte-identical: {}",
+            urls[1]
+        );
+    }
+
+    /// Wide ranking prefers 920:430 instead of 2:3, so the same payload picks a
+    /// different (correct) head for each family.
+    #[test]
+    fn pick_grid_kind_ranks_against_the_wide_aspect_ratio() {
+        let payload = json!({
+            "success": true,
+            "data": [
+                {
+                    "id": 1,
+                    "url": "https://cdn2.steamgriddb.com/grid/portrait.png",
+                    "width": 600,
+                    "height": 900,
+                    "mime": "image/png"
+                },
+                {
+                    "id": 2,
+                    "url": "https://cdn2.steamgriddb.com/grid/banner.png",
+                    "width": 920,
+                    "height": 430,
+                    "mime": "image/png"
+                }
+            ]
+        });
+        let (client, _) = client(vec![
+            json_response(200, payload.clone()),
+            json_response(200, payload),
+        ]);
+
+        let wide = client
+            .pick_grid_kind("key", 7, GridKind::Wide)
+            .unwrap()
+            .unwrap();
+        assert_eq!(wide.url, "https://cdn2.steamgriddb.com/grid/banner.png");
+
+        let portrait = client.pick_grid("key", 7).unwrap().unwrap();
+        assert_eq!(
+            portrait.url,
+            "https://cdn2.steamgriddb.com/grid/portrait.png"
+        );
+    }
+
+    /// As with the portrait pair, a wide automatic pick must be the head of the
+    /// wide manual list so the button and the picker never disagree.
+    #[test]
+    fn pick_grid_kind_is_the_head_of_list_grids_kind() {
+        let payload = json!({
+            "success": true,
+            "data": [
+                {
+                    "id": 3,
+                    "url": "https://cdn2.steamgriddb.com/grid/square.png",
+                    "width": 512,
+                    "height": 512
+                },
+                {
+                    "id": 4,
+                    "url": "https://cdn2.steamgriddb.com/grid/banner.png",
+                    "width": 920,
+                    "height": 430
+                }
+            ]
+        });
+        let (client, _) = client(vec![
+            json_response(200, payload.clone()),
+            json_response(200, payload),
+        ]);
+
+        let head = client
+            .list_grids_kind("key", 7, GridKind::Wide)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        let picked = client
+            .pick_grid_kind("key", 7, GridKind::Wide)
+            .unwrap()
+            .unwrap();
+        assert_eq!(picked, head);
+        assert_eq!(picked.id, 4);
     }
 
     #[test]

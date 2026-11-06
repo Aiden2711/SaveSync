@@ -110,10 +110,12 @@ fn map_game(row: &Row<'_>) -> rusqlite::Result<Game> {
         updated_at: row.get(5)?,
         active_head_revision_id: row.get(6)?,
         cover_path: row.get(7)?,
+        wide_cover_path: row.get(8)?,
+        featured: row.get::<_, i64>(9)? != 0,
     })
 }
 
-const GAME_COLUMNS: &str = "id, title, adapter_type, enrolled, created_at, updated_at, active_head_revision_id, cover_path";
+const GAME_COLUMNS: &str = "id, title, adapter_type, enrolled, created_at, updated_at, active_head_revision_id, cover_path, wide_cover_path, featured";
 
 /// Register a game.
 ///
@@ -157,10 +159,12 @@ pub fn create_game_with_id(
         updated_at: now,
         active_head_revision_id: None,
         cover_path: None,
+        wide_cover_path: None,
+        featured: false,
     };
     conn.execute(
-        "INSERT INTO games (id, title, adapter_type, enrolled, created_at, updated_at, active_head_revision_id, cover_path)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL)",
+        "INSERT INTO games (id, title, adapter_type, enrolled, created_at, updated_at, active_head_revision_id, cover_path, wide_cover_path, featured)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, NULL, 0)",
         params![
             game.id,
             game.title,
@@ -232,6 +236,53 @@ pub fn set_cover_path(conn: &Connection, game_id: &str, cover_path: Option<&str>
     if changed == 0 {
         return Err(Error::NotFound(format!("game {game_id}")));
     }
+    Ok(())
+}
+
+/// Update the wide (banner) cover path for a game. Pass `None` to clear it.
+pub fn set_wide_cover_path(
+    conn: &Connection,
+    game_id: &str,
+    wide_cover_path: Option<&str>,
+) -> Result<()> {
+    let changed = conn.execute(
+        "UPDATE games SET wide_cover_path = ?2, updated_at = ?3 WHERE id = ?1",
+        params![game_id, wide_cover_path, now_iso()],
+    )?;
+    if changed == 0 {
+        return Err(Error::NotFound(format!("game {game_id}")));
+    }
+    Ok(())
+}
+
+/// Make `game_id` the single featured game.
+///
+/// The previous banner is cleared before the new one is set, because
+/// `idx_games_single_featured` rejects a second `featured = 1` row. The two
+/// statements must not be split into separate transactions by a caller: the
+/// engine wraps them in one immediate transaction, so a failure mid-way rolls
+/// back to the previous banner rather than leaving the library without one.
+pub fn set_featured(conn: &Connection, game_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE games SET featured = 0 WHERE featured = 1 AND id <> ?1",
+        [game_id],
+    )?;
+    let changed = conn.execute(
+        "UPDATE games SET featured = 1, updated_at = ?2 WHERE id = ?1",
+        params![game_id, now_iso()],
+    )?;
+    if changed == 0 {
+        return Err(Error::NotFound(format!("game {game_id}")));
+    }
+    Ok(())
+}
+
+/// Clear the featured banner, if any.
+pub fn clear_featured(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "UPDATE games SET featured = 0, updated_at = ?1 WHERE featured = 1",
+        [now_iso()],
+    )?;
     Ok(())
 }
 

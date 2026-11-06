@@ -105,6 +105,8 @@ const games: Game[] = [
     updated_at: "2026-01-04T18:30:00Z",
     active_head_revision_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
     cover_path: null,
+    wide_cover_path: null,
+    featured: false,
   },
   {
     id: SECOND_GAME_ID,
@@ -115,6 +117,8 @@ const games: Game[] = [
     updated_at: "2026-01-05T09:15:00Z",
     active_head_revision_id: null,
     cover_path: null,
+    wide_cover_path: null,
+    featured: false,
   },
   {
     id: THIRD_GAME_ID,
@@ -125,6 +129,8 @@ const games: Game[] = [
     updated_at: "2026-01-03T08:00:00Z",
     active_head_revision_id: null,
     cover_path: null,
+    wide_cover_path: null,
+    featured: false,
   },
   {
     id: FOURTH_GAME_ID,
@@ -135,6 +141,8 @@ const games: Game[] = [
     updated_at: "2026-01-03T09:30:00Z",
     active_head_revision_id: null,
     cover_path: null,
+    wide_cover_path: null,
+    featured: false,
   },
 ];
 
@@ -187,8 +195,10 @@ const baselineDirtyGameIds: string[] = [SECOND_GAME_ID];
  */
 const baselineGames: Game[] = games.map((game) => ({ ...game }));
 
-/** Game ids with a cached cover in the stub's fake blob store. */
+/** Game ids with a cached portrait cover in the stub's fake blob store. */
 const seededCovers = new Set<string>();
+/** Game ids with a cached wide cover; kept separate, exactly like the engine. */
+const seededWideCovers = new Set<string>();
 /** Monotonic clock so a re-fetched cover gets a distinct `updated_at`. */
 let coverRevision = 0;
 /** When set, the next `fetch_cover_art` rejects with this message. */
@@ -292,6 +302,22 @@ export function seedCover(gameId: string): void {
   setCoverPath(gameId, `covers/${gameId}.png`);
 }
 
+/**
+ * Seed a cached wide cover, mirroring `wide_cover_path` on the Rust model.
+ *
+ * Portrait and wide caches are independent, so this never makes
+ * `cover_url({ game_id })` return anything.
+ */
+export function seedWideCover(gameId: string): void {
+  seededWideCovers.add(gameId);
+  setWideCoverPath(gameId, `covers/${gameId}-wide.png`);
+}
+
+/** Game id marked as the library's featured banner, if any. */
+export function seedFeatured(gameId: string): void {
+  for (const game of games) game.featured = game.id === gameId;
+}
+
 /** Makes the next `fetch_cover_art` reject with this message, then clear it. */
 export function failCoverFetch(message: string): void {
   coverFetchError = message;
@@ -376,12 +402,26 @@ function assertKnownGame(args: Record<string, unknown>): void {
  * Returns a copy so callers cannot alias the mutable fixture array.
  */
 function setCoverPath(gameId: string, coverPath: string | null): Game {
+  const game = findGame(gameId);
+  coverRevision += 1;
+  game.cover_path = coverPath;
+  game.updated_at = `2026-01-06T00:00:${String(coverRevision % 60).padStart(2, "0")}Z`;
+  return { ...game };
+}
+
+function findGame(gameId: string): Game {
   const game = games.find((candidate) => candidate.id === gameId);
   if (!game) {
     throw new Error(`Tauri stub: unknown game_id ${gameId}`);
   }
+  return game;
+}
+
+/** Wide counterpart of {@link setCoverPath}; leaves `cover_path` untouched. */
+function setWideCoverPath(gameId: string, wideCoverPath: string | null): Game {
+  const game = findGame(gameId);
   coverRevision += 1;
-  game.cover_path = coverPath;
+  game.wide_cover_path = wideCoverPath;
   game.updated_at = `2026-01-06T00:00:${String(coverRevision % 60).padStart(2, "0")}Z`;
   return { ...game };
 }
@@ -501,6 +541,12 @@ const handlers: Record<string, Handler> = {
   },
   cover_url: (args) => {
     const gameId = String(args.game_id);
+    // The Rust command defaults to portrait, so a missing kind must too.
+    if (args.kind === "wide") {
+      return seededWideCovers.has(gameId)
+        ? `http://savesync-cover.localhost/${gameId}?kind=wide`
+        : null;
+    }
     return seededCovers.has(gameId) ? `http://savesync-cover.localhost/${gameId}` : null;
   },
   fetch_cover_art: (args) => {
@@ -554,8 +600,22 @@ const handlers: Record<string, Handler> = {
     if (!available.some((candidate) => candidate.id === gridId)) {
       throw new Error("That cover is no longer available. Pick another.");
     }
+    // Wide writes the wide column only, mirroring `set_cover_grid_kind`.
+    if (args.kind === "wide") {
+      seededWideCovers.add(gameId);
+      return setWideCoverPath(gameId, `covers/${gameId}-wide.png`);
+    }
     seededCovers.add(gameId);
     return setCoverPath(gameId, `covers/${gameId}.png`);
+  },
+  set_featured: (args) => {
+    const game = findGame(String(args.game_id));
+    for (const candidate of games) candidate.featured = candidate.id === game.id;
+    return { ...game };
+  },
+  clear_featured: () => {
+    for (const candidate of games) candidate.featured = false;
+    return null;
   },
 };
 
@@ -575,6 +635,7 @@ export function installTauriStub(): InvokeCall[] {
   dirtyGameIds.length = 0;
   dirtyGameIds.push(...baselineDirtyGameIds);
   seededCovers.clear();
+  seededWideCovers.clear();
   coverFetchError = null;
   coverSearchResponse = defaultCoverSearch();
   coverSearchError = null;
